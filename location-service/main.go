@@ -293,6 +293,14 @@ func parseIntFromString(s string, out *int64) (int, error) {
 	return n, err
 }
 
+func statsHandler(w http.ResponseWriter, r *http.Request) {
+	hub.mu.RLock()
+	count := len(hub.clients)
+	hub.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"online_count":%d}`, count)
+}
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok","service":"ztracky-location-service"}`))
@@ -303,6 +311,7 @@ func main() {
 
 	http.HandleFunc("/ws", serveWS)
 	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/stats", statsHandler)
 
 	log.Printf("ZTracky location service listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {

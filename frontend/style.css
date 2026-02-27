@@ -198,3 +198,11 @@ nav .logo { font-size: 1.1rem; font-weight: 700; flex: 1; }
   .impact-card { flex-wrap: wrap; }
   .control-actions { width: 100%; justify-content: flex-end; }
 }
+
+/* ── Premium tab additions ── */
+.prem-badge { font-size:1.2rem; flex-shrink:0; }
+.admin-form-card { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:14px; }
+.admin-form-card h3 { font-size:1rem; margin-bottom:10px; }
+.form-row { display:flex; gap:10px; flex-wrap:wrap; }
+.form-row input, .form-row select { flex:1; min-width:140px; padding:9px 12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:.9rem; }
+.form-row input:focus, .form-row select:focus { outline:none; border-color:var(--accent); }

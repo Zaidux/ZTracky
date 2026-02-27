@@ -128,16 +128,18 @@ function showApp() {
   setInterval(() => { loadFriends(); loadRequests(); }, REFRESH_INTERVAL_MS);
 }
 
+// ── Tabs (includes premium) ────────────────────────────────────────────────
 function showTab(name) {
-  const tabs = ['map', 'requests', 'friends', 'remote', 'settings'];
+  const tabs = ['map', 'requests', 'friends', 'remote', 'premium', 'settings'];
   tabs.forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((btn, i) => {
     btn.classList.toggle('active', tabs[i] === name);
   });
-  if (name === 'map' && map) setTimeout(() => map.invalidateSize(), 100);
-  if (name === 'remote') refreshControlPage();
+  if (name === 'map'     && map) setTimeout(() => map.invalidateSize(), 100);
+  if (name === 'remote')         refreshControlPage();
+  if (name === 'premium')        refreshPremiumUI();
 }
 
 // ── Map ────────────────────────────────────────────────────────────────────
@@ -719,3 +721,175 @@ function showMessage(el, text, type) {
   el.textContent = text; el.className = `message ${type}`; el.style.display = '';
   setTimeout(() => { el.style.display = 'none'; }, 5000);
 }
+
+// ── Premium UI ─────────────────────────────────────────────────────────────
+// Smart-contract address deployed on the selected network (placeholder — replace after deploy)
+const CONTRACT_ADDRESSES = {
+  '0xaa36a7': '0x0000000000000000000000000000000000000000', // Sepolia
+  '0x1':      '0x0000000000000000000000000000000000000000', // Mainnet
+  '0x89':     '0x0000000000000000000000000000000000000000', // Polygon
+};
+// subscribe() 4-byte selector: keccak256("subscribe()")[0..3]
+const SUBSCRIBE_SELECTOR = '0xa4bcfe00';
+
+function refreshPremiumUI() {
+  const isPrem = currentUser && currentUser.is_premium;
+  document.getElementById('premium-status-banner').style.display = isPrem ? '' : 'none';
+  document.getElementById('free-status-banner').style.display    = isPrem ? 'none' : '';
+  document.getElementById('payment-section').style.display       = isPrem ? 'none' : '';
+  document.getElementById('history-section').style.display       = isPrem ? '' : 'none';
+  ['history', 'priority', 'friends', 'remote'].forEach(f => {
+    const el = document.getElementById(`feat-${f}`);
+    if (el) el.textContent = isPrem ? '✅' : '🔒';
+  });
+  // Phone number field
+  if (currentUser && currentUser.phone_number) {
+    document.getElementById('phone-input').value = currentUser.phone_number;
+  }
+  // Show payment success banner if returning from Stripe
+  if (window._PAYMENT_STATUS === 'success') {
+    window._PAYMENT_STATUS = null;
+    showMessage(document.getElementById('lost-msg'), '🎉 Payment successful! Refresh to activate premium.', 'success');
+  }
+}
+
+async function savePhone() {
+  const phone = document.getElementById('phone-input').value.trim();
+  if (!phone) return;
+  const res = await apiPost('/api/me/phone', { phone_number: phone });
+  showMessage(document.getElementById('phone-msg'), res.error ? res.error : '✅ Phone number saved!',
+              res.error ? 'error' : 'success');
+  if (!res.error && currentUser) currentUser.phone_number = phone;
+}
+
+async function activateLostMode() {
+  const msgEl = document.getElementById('lost-msg');
+  const res   = await apiPost('/api/device/lost', null);
+  if (res.error) { showMessage(msgEl, res.error, 'error'); return; }
+  const smsNote = res.sms_sent ? ' An SMS was sent to your registered number.' : '';
+  showMessage(msgEl, `📴 Lost mode activated.${smsNote} Deep link: ${res.deep_link}`, 'success');
+}
+
+// ── Lost-token: silent tracking triggered by SMS link ─────────────────────
+function handleLostToken() {
+  if (!window._LOST_TOKEN) return;
+  const token = window._LOST_TOKEN;
+  window._LOST_TOKEN = null;
+  // Verify token and start silent tracking to the real owner
+  fetch(`${API_BASE}/api/device/activate?lost_token=${encodeURIComponent(token)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.owner_user_id) {
+        _lostOwnerID = data.owner_user_id;
+        startSilentTracking();
+      }
+    }).catch(() => {});
+}
+
+let _lostOwnerID = null;
+
+function startSilentTracking() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.watchPosition(pos => {
+    const { latitude, longitude, accuracy } = pos.coords;
+    // POST location without requiring a logged-in session
+    fetch(`${API_BASE}/api/location`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ latitude, longitude, accuracy, lost_owner_id: _lostOwnerID }),
+    }).catch(() => {});
+  }, () => {}, { enableHighAccuracy: false, maximumAge: 10000, timeout: 30000 });
+}
+
+// ── Ethereum / MetaMask Payment ────────────────────────────────────────────
+async function ethSubscribe() {
+  const msgEl = document.getElementById('eth-pay-msg');
+  if (!window.ethereum) {
+    showMessage(msgEl, 'MetaMask not installed. Install it at metamask.io', 'error'); return;
+  }
+  try {
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const from = accounts[0];
+    const chainId = document.getElementById('eth-network').value;
+    // Switch to selected network
+    await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId }] })
+          .catch(() => {});
+
+    const contractAddr = CONTRACT_ADDRESSES[chainId];
+    if (!contractAddr || contractAddr === '0x' + '0'.repeat(40)) {
+      showMessage(msgEl, '⚠️ Smart contract not deployed on this network yet.', 'error'); return;
+    }
+    // Price: 0.005 ETH = 5_000_000_000_000_000 wei
+    const value = '0x' + (5_000_000_000_000_000).toString(16);
+    showMessage(msgEl, '⏳ Waiting for MetaMask confirmation…', 'success');
+    const txHash = await window.ethereum.request({
+      method: 'eth_sendTransaction',
+      params: [{ from, to: contractAddr, value, data: '0xa4bcfe00', gas: '0x15F90' }],
+    });
+    showMessage(msgEl, `✅ Transaction sent! Tx: ${txHash.slice(0, 18)}…`, 'success');
+    // Notify backend to mark user as premium
+    const res = await apiPost('/api/payments/crypto/verify',
+      { tx_hash: txHash, chain: chainId, wallet_address: from });
+    if (!res.error) {
+      currentUser.is_premium = true;
+      localStorage.setItem('ztracky_user', JSON.stringify(currentUser));
+      refreshPremiumUI();
+      showMessage(msgEl, '🎉 Premium activated!', 'success');
+    }
+  } catch (e) {
+    showMessage(document.getElementById('eth-pay-msg'), `❌ ${e.message}`, 'error');
+  }
+}
+
+// ── Stripe Checkout ────────────────────────────────────────────────────────
+async function stripeCheckout() {
+  const res = await apiPost('/api/payments/stripe/checkout', null);
+  if (res.error) { alert(res.error); return; }
+  window.location.href = res.checkout_url;
+}
+
+// ── Route Playback (premium) ───────────────────────────────────────────────
+let routePolyline = null;
+
+async function playbackRoute() {
+  const history = await apiGet('/api/location/history/me');
+  if (history.error) { alert(history.error); return; }
+  if (!history.length) { alert('No location history recorded yet.'); return; }
+
+  const points = history.reverse().map(h => [h.latitude, h.longitude]);
+  if (!map) { showTab('map'); }
+  showTab('map');
+
+  if (routePolyline) map.removeLayer(routePolyline);
+  routePolyline = L.polyline(points, { color: '#3b82f6', weight: 3, opacity: 0.8 }).addTo(map);
+  map.fitBounds(routePolyline.getBounds(), { padding: [20, 20] });
+
+  // Animate a marker along the route
+  let idx = 0;
+  const dot = L.circleMarker(points[0], { radius: 8, color: '#ef4444', fillOpacity: 1 }).addTo(map);
+  const timer = setInterval(() => {
+    if (idx >= points.length) { clearInterval(timer); dot.remove(); return; }
+    dot.setLatLng(points[idx++]);
+  }, 300);
+}
+
+// ── Offline indicator ──────────────────────────────────────────────────────
+function updateOnlineStatus() {
+  const el = document.getElementById('location-status');
+  if (!el) return;
+  if (!navigator.onLine) {
+    el.textContent = '📵 Offline — location queued for sync';
+  }
+}
+window.addEventListener('online',  () => { lastSentTime = 0; });
+window.addEventListener('offline', updateOnlineStatus);
+
+// ── Init additions (call from showApp) ─────────────────────────────────────
+const _origShowApp = showApp;
+// Patch showApp to also handle lost token and premium init
+window.addEventListener('DOMContentLoaded', () => {
+  handleLostToken();
+  if (token && currentUser) {
+    // showApp is already called via the existing DOMContentLoaded handler
+  }
+});

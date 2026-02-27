@@ -46,6 +46,7 @@
         <button class="tab-btn" onclick="showTab('requests')">📨 Requests</button>
         <button class="tab-btn" onclick="showTab('friends')">👥 Friends</button>
         <button class="tab-btn" onclick="showTab('remote')">🛡 Remote</button>
+        <button class="tab-btn" onclick="showTab('premium')">⭐ Premium</button>
         <button class="tab-btn" onclick="showTab('settings')">⚙️ Battery</button>
         <button class="btn-danger" onclick="logout()">Sign Out</button>
       </div>
@@ -136,6 +137,77 @@
             <button class="rc-close-btn" onclick="closeScreenViewer()">✕ Stop</button>
           </div>
           <video id="screen-video" autoplay playsinline muted class="screen-video"></video>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Premium Tab -->
+    <div id="tab-premium" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div id="premium-status-banner" class="impact-card" style="display:none">
+          <div class="impact-icon">⭐</div>
+          <div class="impact-body"><strong>ZTracky Premium — Active</strong><span>All premium features unlocked</span></div>
+          <div class="impact-badge" style="color:#f59e0b">●●●●●</div>
+        </div>
+        <div id="free-status-banner" class="impact-card">
+          <div class="impact-icon">🔒</div>
+          <div class="impact-body"><strong>Free Plan</strong><span>Upgrade to unlock all features — $9.99 / month</span></div>
+          <div class="impact-badge" style="color:var(--text-muted)">●○○○○</div>
+        </div>
+
+        <div class="section-title" style="margin-top:24px">⭐ Premium Features</div>
+        <div class="perms-grid">
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">📍</span><div><strong>Location History</strong><small>Last 100 location points + route playback on the map</small></div></div><span class="prem-badge" id="feat-history">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">⚡</span><div><strong>Priority Updates</strong><small>10-second minimum interval (free: 30 s minimum)</small></div></div><span class="prem-badge" id="feat-priority">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">👥</span><div><strong>Unlimited Friends</strong><small>Free plan: up to 5 friends</small></div></div><span class="prem-badge" id="feat-friends">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">📴</span><div><strong>Advanced Remote Control</strong><small>Screen view, stealth mode, remote lock</small></div></div><span class="prem-badge" id="feat-remote">🔒</span></div>
+        </div>
+
+        <!-- Lost-phone mode -->
+        <div class="section-title" style="margin-top:28px">📱 Phone Number &amp; Lost Mode</div>
+        <p class="setting-hint">Register your phone number so you can receive an SMS link that silently activates location tracking — even if your phone is stolen and the app isn't open.</p>
+        <div class="input-row" style="margin-bottom:12px">
+          <input id="phone-input" type="tel" placeholder="+1234567890"/>
+          <button onclick="savePhone()">Save Number</button>
+        </div>
+        <div id="phone-msg" class="message" style="display:none"></div>
+        <button class="rc-btn rc-btn-stealth" style="margin-top:8px" onclick="activateLostMode()">📴 Report Phone Stolen (Send SMS)</button>
+        <div id="lost-msg" class="message" style="display:none"></div>
+
+        <!-- Route playback (premium) -->
+        <div id="history-section" style="display:none;margin-top:28px">
+          <div class="section-title">🗺 Route Playback</div>
+          <p class="setting-hint">Your last 100 recorded location points animated on the map.</p>
+          <button class="btn-save" onclick="playbackRoute()">▶ Play Route on Map</button>
+        </div>
+
+        <!-- Payment options -->
+        <div id="payment-section">
+          <div class="section-title" style="margin-top:28px">💳 Subscribe — $9.99 / month</div>
+
+          <!-- Stripe -->
+          <div class="admin-form-card" style="margin-bottom:12px">
+            <h3>💳 Pay with Card (Stripe)</h3>
+            <p class="setting-hint">Secure checkout hosted by Stripe. No card details touch our servers.</p>
+            <button class="btn-save" onclick="stripeCheckout()">Checkout with Card →</button>
+          </div>
+
+          <!-- Ethereum -->
+          <div class="admin-form-card">
+            <h3>⟠ Pay with Ethereum (MetaMask)</h3>
+            <p class="setting-hint">Subscribe directly on-chain via our smart contract. Works on Ethereum, Polygon and any EVM network.</p>
+            <div class="form-row" style="margin-bottom:12px">
+              <select id="eth-network" style="flex:1;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+                <option value="0xaa36a7">Sepolia Testnet (test)</option>
+                <option value="0x1">Ethereum Mainnet</option>
+                <option value="0x89">Polygon</option>
+              </select>
+            </div>
+            <button class="btn-save" style="background:#7c3aed" onclick="ethSubscribe()">Pay with MetaMask →</button>
+            <div id="eth-pay-msg" class="message" style="display:none"></div>
+          </div>
         </div>
 
       </div>
@@ -255,5 +327,16 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+    // Handle lost-mode deep link on page load
+    const _lostToken = new URLSearchParams(location.search).get('lost_token');
+    if (_lostToken) window._LOST_TOKEN = _lostToken;
+    // Handle Stripe payment return
+    const _payStatus = new URLSearchParams(location.search).get('payment');
+    if (_payStatus) window._PAYMENT_STATUS = _payStatus;
+  </script>
 </body>
 </html>

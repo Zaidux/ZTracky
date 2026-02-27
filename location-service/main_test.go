@@ -249,6 +249,29 @@ func TestWSRelayRemoteCommand(t *testing.T) {
 	}
 }
 
+func TestStatsEndpoint(t *testing.T) {
+	// The stats endpoint should return online_count reflecting current hub state
+	srv := httptest.NewServer(http.HandlerFunc(statsHandler))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/stats", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if _, ok := body["online_count"]; !ok {
+		t.Fatal("response missing online_count field")
+	}
+}
+
 func TestHubBroadcastNotToSelf(t *testing.T) {
 	h := newHub()
 	ch := make(chan []byte, 2)
