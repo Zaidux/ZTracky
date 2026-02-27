@@ -36,15 +36,16 @@ function adminLogout() {
 }
 
 function adminTab(name) {
-  ['overview','users','wallet','bank'].forEach(t => {
+  ['overview','users','reports','wallet','bank'].forEach(t => {
     document.getElementById(`atab-${t}`).style.display = t === name ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((b, i) => {
-    b.classList.toggle('active', ['overview','users','wallet','bank'][i] === name);
+    b.classList.toggle('active', ['overview','users','reports','wallet','bank'][i] === name);
   });
   currentTab = name;
   if (name === 'overview') loadStats();
   if (name === 'users')    loadUsers();
+  if (name === 'reports')  loadBugReports();
   if (name === 'wallet')   { loadWalletHistory(); refreshBalances(); }
   if (name === 'bank')     checkBankStatus();
 }
@@ -53,6 +54,9 @@ function adminTab(name) {
 async function loadStats() {
   const res = await aGet('/api/admin/stats');
   if (!res.error) renderStats(res);
+  // Also load bug report stats
+  const bugStats = await aGet('/api/admin/bug-reports/stats');
+  if (!bugStats.error) renderBugStats(bugStats);
 }
 
 function renderStats(d) {
@@ -60,6 +64,15 @@ function renderStats(d) {
   document.getElementById('s-online').textContent  = d.online_count  ?? '–';
   document.getElementById('s-premium').textContent = d.premium_users ?? '–';
   document.getElementById('s-revenue').textContent = d.revenue_usd != null ? `$${d.revenue_usd.toFixed(2)}` : '–';
+}
+
+function renderBugStats(d) {
+  const bugsEl = document.getElementById('s-bugs');
+  const featuresEl = document.getElementById('s-features');
+  const openEl = document.getElementById('s-open-reports');
+  if (bugsEl) bugsEl.textContent = d.bugs ?? '–';
+  if (featuresEl) featuresEl.textContent = d.features ?? '–';
+  if (openEl) openEl.textContent = d.open ?? '–';
 }
 
 // ── Users ──────────────────────────────────────────────────────────────────
@@ -374,4 +387,112 @@ function assertionToJSON(assertion) {
       userHandle: assertion.response.userHandle ? bufferToBase64url(assertion.response.userHandle) : null,
     },
   };
+}
+
+// ── Bug Reports ────────────────────────────────────────────────────────────
+let currentAdminReportId = null;
+let currentReportUserId = null;
+
+async function loadBugReports() {
+  const filter = document.getElementById('reports-filter')?.value || '';
+  const url = filter ? `/api/admin/bug-reports?status=${filter}` : '/api/admin/bug-reports';
+  const reports = await aGet(url);
+  if (reports.error) return;
+
+  const tbody = document.getElementById('reports-tbody');
+  if (!reports.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted)">No reports found</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = reports.map(r => `
+    <tr>
+      <td>${r.id}</td>
+      <td><span class="badge ${r.report_type === 'bug' ? 'badge-rejected' : 'badge-accepted'}">${r.report_type === 'bug' ? '🐛 Bug' : '✨ Feature'}</span></td>
+      <td><strong>${escapeHtml(r.title)}</strong></td>
+      <td>${escapeHtml(r.username)}</td>
+      <td><span class="badge badge-${r.status === 'resolved' ? 'accepted' : r.status === 'closed' ? 'rejected' : 'pending'}">${r.status}</span></td>
+      <td>${r.reply_count || 0}</td>
+      <td><small>${new Date(r.created_at).toLocaleDateString()}</small></td>
+      <td>
+        <button class="rc-btn rc-btn-view" onclick="openAdminReportModal(${r.id})">View</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function openAdminReportModal(reportId) {
+  currentAdminReportId = reportId;
+  const res = await aGet(`/api/admin/bug-reports/${reportId}`);
+  if (res.error) { alert(res.error); return; }
+
+  currentReportUserId = res.user_id;
+
+  document.getElementById('admin-modal-type').textContent = res.report_type === 'bug' ? '🐛 Bug' : '✨ Feature';
+  document.getElementById('admin-modal-type').className = `badge ${res.report_type === 'bug' ? 'badge-rejected' : 'badge-accepted'}`;
+  document.getElementById('admin-modal-title').textContent = res.title;
+  document.getElementById('admin-modal-desc').textContent = res.description;
+  document.getElementById('admin-modal-user').textContent = res.username;
+  document.getElementById('admin-modal-status').textContent = res.status;
+  document.getElementById('admin-modal-status').className = `badge badge-${res.status === 'resolved' ? 'accepted' : res.status === 'closed' ? 'rejected' : 'pending'}`;
+  document.getElementById('admin-modal-date').textContent = new Date(res.created_at).toLocaleString();
+
+  const repliesEl = document.getElementById('admin-modal-replies');
+  if (!res.replies || !res.replies.length) {
+    repliesEl.innerHTML = '<p class="empty" style="color:var(--text-muted);font-size:.9rem">No conversation yet. Send a reply to help the user!</p>';
+  } else {
+    repliesEl.innerHTML = res.replies.map(reply => `
+      <div class="bug-reply ${reply.is_admin_reply ? 'admin-reply' : 'user-reply'}">
+        <div class="bug-reply-header">
+          <strong>${reply.is_admin_reply ? '🛡 Admin' : '👤 ' + escapeHtml(reply.username)}</strong>
+          <small>${new Date(reply.created_at).toLocaleString()}</small>
+        </div>
+        <div class="bug-reply-content">${escapeHtml(reply.content)}</div>
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('admin-reply-input').value = '';
+  document.getElementById('admin-report-modal').style.display = '';
+}
+
+function closeAdminReportModal() {
+  document.getElementById('admin-report-modal').style.display = 'none';
+  currentAdminReportId = null;
+  currentReportUserId = null;
+}
+
+async function sendAdminReply() {
+  if (!currentAdminReportId) return;
+  const content = document.getElementById('admin-reply-input').value.trim();
+  if (!content) return;
+
+  const res = await aPost(`/api/admin/bug-reports/${currentAdminReportId}/reply`, { content });
+  if (res.error) { alert(res.error); return; }
+
+  document.getElementById('admin-reply-input').value = '';
+  openAdminReportModal(currentAdminReportId);  // Refresh
+}
+
+async function updateReportStatus(newStatus) {
+  if (!currentAdminReportId) return;
+  const res = await aPost(`/api/admin/bug-reports/${currentAdminReportId}/status?new_status=${newStatus}`, null);
+  if (res.error) { alert(res.error); return; }
+  openAdminReportModal(currentAdminReportId);  // Refresh
+  loadBugReports();  // Refresh list
+}
+
+async function grantPremiumToReporter() {
+  if (!currentReportUserId) return;
+  if (!confirm('Grant free premium access to this user?')) return;
+  const res = await aPost(`/api/admin/users/${currentReportUserId}/grant-free-premium`, { reason: 'Awarded for helpful bug report' });
+  if (res.error) { alert(res.error); return; }
+  alert('✅ Premium access granted!');
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }

@@ -130,7 +130,7 @@ function showApp() {
 
 // ── Tabs (includes premium) ────────────────────────────────────────────────
 function showTab(name) {
-  const tabs = ['map', 'requests', 'friends', 'chat', 'calltrack', 'remote', 'premium', 'settings'];
+  const tabs = ['map', 'requests', 'friends', 'chat', 'calltrack', 'remote', 'premium', 'settings', 'feedback'];
   tabs.forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? '' : 'none';
   });
@@ -142,6 +142,7 @@ function showTab(name) {
   if (name === 'premium')          refreshPremiumUI();
   if (name === 'chat')             initChatTab();
   if (name === 'calltrack')        initCallTrackTab();
+  if (name === 'feedback')         initFeedbackTab();
 }
 
 // ── Map ────────────────────────────────────────────────────────────────────
@@ -1373,4 +1374,100 @@ function _fmtDuration(s) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return h ? `${h}h ${m}min` : `${m} min`;
+}
+
+// ── Bug Reports / Feedback ─────────────────────────────────────────────────
+let currentReportId = null;
+
+async function submitFeedback() {
+  const reportType = document.getElementById('feedback-type').value;
+  const title = document.getElementById('feedback-title').value.trim();
+  const description = document.getElementById('feedback-description').value.trim();
+  const msgEl = document.getElementById('feedback-msg');
+
+  if (!title) { showMessage(msgEl, 'Please enter a title', 'error'); return; }
+  if (!description) { showMessage(msgEl, 'Please enter a description', 'error'); return; }
+
+  const res = await apiPost('/api/bug-reports', { report_type: reportType, title, description });
+  if (res.error) { showMessage(msgEl, res.error, 'error'); return; }
+
+  showMessage(msgEl, '✅ Feedback submitted! Thank you.', 'success');
+  document.getElementById('feedback-title').value = '';
+  document.getElementById('feedback-description').value = '';
+  loadMyBugReports();
+}
+
+async function loadMyBugReports() {
+  const data = await apiGet('/api/bug-reports');
+  const el = document.getElementById('my-bug-reports');
+  if (data.error) { el.innerHTML = `<p class="empty">Error: ${data.error}</p>`; return; }
+  if (!data.length) { el.innerHTML = '<p class="empty">No reports submitted yet</p>'; return; }
+
+  el.innerHTML = data.map(r => `
+    <div class="req-card" onclick="openBugReportModal(${r.id})" style="cursor:pointer">
+      <div class="info" style="flex:1">
+        <strong>${escapeHtml(r.title)}</strong>
+        <small style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="badge ${r.report_type === 'bug' ? 'badge-rejected' : 'badge-accepted'}">${r.report_type === 'bug' ? '🐛 Bug' : '✨ Feature'}</span>
+          <span class="badge badge-${r.status === 'resolved' ? 'accepted' : r.status === 'open' ? 'pending' : 'pending'}">${r.status}</span>
+          ${r.reply_count > 0 ? `<span>💬 ${r.reply_count}</span>` : ''}
+        </small>
+      </div>
+      <small>${new Date(r.created_at).toLocaleDateString()}</small>
+    </div>
+  `).join('');
+}
+
+async function openBugReportModal(reportId) {
+  currentReportId = reportId;
+  const res = await apiGet(`/api/bug-reports/${reportId}`);
+  if (res.error) { alert(res.error); return; }
+
+  document.getElementById('modal-report-type').textContent = res.report_type === 'bug' ? '🐛 Bug' : '✨ Feature';
+  document.getElementById('modal-report-type').className = `badge ${res.report_type === 'bug' ? 'badge-rejected' : 'badge-accepted'}`;
+  document.getElementById('modal-report-title').textContent = res.title;
+  document.getElementById('modal-report-desc').textContent = res.description;
+  document.getElementById('modal-report-status').textContent = res.status;
+  document.getElementById('modal-report-status').className = `badge badge-${res.status === 'resolved' ? 'accepted' : res.status === 'open' ? 'pending' : 'pending'}`;
+  document.getElementById('modal-report-date').textContent = new Date(res.created_at).toLocaleString();
+
+  const repliesEl = document.getElementById('modal-replies');
+  if (!res.replies || !res.replies.length) {
+    repliesEl.innerHTML = '<p class="empty">No replies yet. The admin will respond soon!</p>';
+  } else {
+    repliesEl.innerHTML = res.replies.map(reply => `
+      <div class="bug-reply ${reply.is_admin_reply ? 'admin-reply' : 'user-reply'}">
+        <div class="bug-reply-header">
+          <strong>${reply.is_admin_reply ? '🛡 Admin' : '👤 You'}</strong>
+          <small>${new Date(reply.created_at).toLocaleString()}</small>
+        </div>
+        <div class="bug-reply-content">${escapeHtml(reply.content)}</div>
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('modal-reply-input').value = '';
+  document.getElementById('bug-report-modal').style.display = '';
+}
+
+function closeBugReportModal() {
+  document.getElementById('bug-report-modal').style.display = 'none';
+  currentReportId = null;
+}
+
+async function sendBugReportReply() {
+  if (!currentReportId) return;
+  const content = document.getElementById('modal-reply-input').value.trim();
+  if (!content) return;
+
+  const res = await apiPost(`/api/bug-reports/${currentReportId}/reply`, { content });
+  if (res.error) { alert(res.error); return; }
+
+  document.getElementById('modal-reply-input').value = '';
+  openBugReportModal(currentReportId);  // Refresh
+}
+
+// Initialize feedback tab
+function initFeedbackTab() {
+  loadMyBugReports();
 }

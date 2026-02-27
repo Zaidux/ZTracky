@@ -50,6 +50,7 @@
         <button class="tab-btn" onclick="showTab('remote')">🛡 Remote</button>
         <button class="tab-btn" onclick="showTab('premium')">⭐ Premium</button>
         <button class="tab-btn" onclick="showTab('settings')">⚙️ Battery</button>
+        <button class="tab-btn" onclick="showTab('feedback')">🐛 Feedback</button>
         <button class="btn-danger" onclick="logout()">Sign Out</button>
       </div>
     </nav>
@@ -416,6 +417,59 @@
 
       </div>
     </div>
+
+    <!-- Feedback/Bug Report Tab -->
+    <div id="tab-feedback" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div class="section-title">🐛 Submit Bug Report or Feature Request</div>
+        <p class="setting-hint">Found a bug? Have an idea for a new feature? Let us know! Our team will review your feedback and respond.</p>
+
+        <!-- Report Type -->
+        <div class="input-row" style="margin-bottom:10px">
+          <select id="feedback-type" style="flex:0 0 auto;padding:9px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+            <option value="bug">🐛 Bug Report</option>
+            <option value="feature">✨ Feature Request</option>
+          </select>
+          <input id="feedback-title" type="text" placeholder="Brief title" style="flex:1"/>
+        </div>
+        <textarea id="feedback-description" rows="4" placeholder="Describe the issue or feature in detail…" style="width:100%;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text);resize:vertical;margin-bottom:12px"></textarea>
+        <button class="btn-save" onclick="submitFeedback()">📤 Submit Feedback</button>
+        <div id="feedback-msg" class="message" style="display:none"></div>
+
+        <!-- My Reports -->
+        <div class="section-title" style="margin-top:28px">📋 My Submitted Reports</div>
+        <button class="btn-refresh" onclick="loadMyBugReports()" style="margin-bottom:12px">↺ Refresh</button>
+        <div id="my-bug-reports"><p class="empty">No reports submitted yet</p></div>
+
+      </div>
+    </div>
+
+    <!-- Bug Report Detail Modal (overlay) -->
+    <div id="bug-report-modal" class="bug-report-modal" style="display:none">
+      <div class="bug-report-modal-content">
+        <div class="bug-report-modal-header">
+          <span id="modal-report-type" class="badge">Bug</span>
+          <h3 id="modal-report-title">Report Title</h3>
+          <button class="rc-close-btn" onclick="closeBugReportModal()">✕</button>
+        </div>
+        <div class="bug-report-modal-body">
+          <div class="bug-report-desc" id="modal-report-desc"></div>
+          <div class="bug-report-meta">
+            <span class="badge" id="modal-report-status">open</span>
+            <small id="modal-report-date"></small>
+          </div>
+          <hr style="border-color:var(--border);margin:12px 0"/>
+          <div class="section-title" style="font-size:.85rem">💬 Conversation</div>
+          <div id="modal-replies" class="bug-report-replies"></div>
+          <div class="chat-input-row" style="margin-top:12px">
+            <input id="modal-reply-input" type="text" placeholder="Type a reply…" onkeydown="if(event.key==='Enter')sendBugReportReply()"/>
+            <button onclick="sendBugReportReply()">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- ── Stealth overlay: simulates powered-off screen ────────────────────── -->

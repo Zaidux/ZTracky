@@ -207,6 +207,50 @@ class CallTrackingEvent(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class BugReportType(str, enum.Enum):
+    bug = "bug"
+    feature = "feature"
+
+
+class BugReportStatus(str, enum.Enum):
+    open = "open"
+    in_progress = "in_progress"
+    resolved = "resolved"
+    closed = "closed"
+
+
+class BugReport(Base):
+    """User-submitted bug reports and feature requests."""
+    __tablename__ = "bug_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    report_type = Column(Enum(BugReportType), default=BugReportType.bug, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    status = Column(Enum(BugReportStatus), default=BugReportStatus.open, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", foreign_keys=[user_id])
+    replies = relationship("BugReportReply", back_populates="report", order_by="BugReportReply.created_at")
+
+
+class BugReportReply(Base):
+    """Replies on bug reports (chat-style conversation between user and admin)."""
+    __tablename__ = "bug_report_replies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(Integer, ForeignKey("bug_reports.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # Who sent this reply
+    is_admin_reply = Column(Boolean, default=False)  # True if admin replied
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    report = relationship("BugReport", back_populates="replies")
+    user = relationship("User", foreign_keys=[user_id])
+
+
 def get_db():
     db = SessionLocal()
     try:

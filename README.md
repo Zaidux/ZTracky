@@ -62,12 +62,44 @@ ZTracky is a real-time, privacy-first location-sharing and device-security platf
 ### 🛡 Admin Panel (`/admin.html`)
 | Feature | Details |
 |---|---|
-| Stats Dashboard | Total users · Live online count · Premium count · Revenue |
+| Stats Dashboard | Total users · Live online count · Premium count · Revenue · Bug reports |
 | User Management | List, upgrade, downgrade any user |
+| **Free Premium Grants** | Grant free premium access to users (for beta testers, bug reporters, etc.) |
+| **Bug Report Review** | View and respond to user-submitted bug reports and feature requests |
 | Crypto Wallet | MetaMask ETH / ERC-20 sends to any address / chain |
 | Bank Payouts | Stripe Connect onboarding + biometric-gated bank transfers |
 | WebAuthn 2FA | Fingerprint / Face ID required before every financial transfer |
 | Transfer Audit Log | Immutable record of all admin transactions |
+
+### 🐛 Bug Reports & Feature Requests
+| Feature | Details |
+|---|---|
+| Submit Feedback | Users can submit bug reports or feature requests from the app |
+| Admin Review | Admin can view all reports, update status, and reply |
+| Chat-Style Replies | Conversation thread between user and admin |
+| Status Tracking | Reports can be marked as open, in_progress, resolved, or closed |
+
+---
+
+## 🖥️ CLI — Terminal Location Tracker
+
+ZTracky includes a powerful command-line interface for terminal enthusiasts. Intuitive, hacker-movie aesthetic.
+
+```bash
+# Install CLI
+cd cli && pip install -e .
+
+# Commands
+ztracky login           # Authenticate
+ztracky status          # Show account status
+ztracky track           # Real-time tracking dashboard
+ztracky friends         # List friends
+ztracky locate alice    # Get friend's location
+ztracky chat alice      # Chat with friend (premium)
+ztracky requests        # Manage friend requests
+ztracky submit-bug      # Submit bug report
+ztracky premium         # Check premium status
+```
 
 ---
 
@@ -157,7 +189,7 @@ ZTracky/
 │   ├── database.py           # SQLAlchemy models
 │   ├── auth.py               # JWT helpers
 │   ├── requirements.txt
-│   └── test_api.py           # 37 integration tests
+│   └── test_api.py           # 50 integration tests
 ├── location-service/         # Go WebSocket hub
 │   ├── main.go
 │   └── main_test.go          # 14 unit tests
@@ -169,6 +201,11 @@ ZTracky/
 │   ├── admin.html            # Admin panel
 │   ├── admin.js
 │   └── admin.css
+├── cli/                      # Terminal-based client
+│   ├── ztracky.py            # CLI application
+│   ├── setup.py              # Package setup
+│   ├── requirements.txt
+│   └── README.md             # CLI documentation
 ├── contracts/
 │   └── ZTrackySubscription.sol   # Solidity smart contract
 ├── docker-compose.yml

@@ -18,7 +18,7 @@ from database import (
     get_db, create_tables, User, TrackingRequest, Location, LocationHistory,
     Payment, LostDevice, WebAuthnCredential, StripeConnectAccount,
     AdminTransaction, RequestStatus, Geofence, GeofenceAlert, ChatMessage,
-    CallTrackingEvent,
+    CallTrackingEvent, BugReport, BugReportReply, BugReportType, BugReportStatus,
 )
 from auth import hash_password, verify_password, create_access_token, decode_token
 
@@ -210,6 +210,41 @@ class NavigationMode(str, enum.Enum):
     driving = "driving"
     walking = "walking"
     cycling = "cycling"
+
+
+# ── Bug Report Schemas ─────────────────────────────────────────────────────
+class BugReportIn(BaseModel):
+    report_type: str = "bug"  # "bug" or "feature"
+    title: str
+    description: str
+
+class BugReportReplyIn(BaseModel):
+    content: str
+
+class BugReportOut(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    report_type: str
+    title: str
+    description: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    class Config: from_attributes = True
+
+class BugReportReplyOut(BaseModel):
+    id: int
+    report_id: int
+    user_id: int
+    username: str
+    is_admin_reply: bool
+    content: str
+    created_at: datetime
+    class Config: from_attributes = True
+
+class AdminGrantPremiumIn(BaseModel):
+    reason: str = ""  # Optional reason for granting free premium
 
 
 # ── Auth ───────────────────────────────────────────────────────────────────
@@ -794,6 +829,282 @@ def admin_downgrade(user_id: int, _: None = Depends(require_admin), db: Session 
     if not user: raise HTTPException(404, "User not found")
     user.is_premium = False; db.commit()
     return {"user_id": user_id, "is_premium": False}
+
+
+@app.post("/api/admin/users/{user_id}/grant-free-premium")
+def admin_grant_free_premium(user_id: int, body: AdminGrantPremiumIn = None,
+                              _: None = Depends(require_admin), db: Session = Depends(get_db)):
+    """Grant free premium access to a user (no payment required)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user: raise HTTPException(404, "User not found")
+    user.is_premium = True
+    db.commit()
+    return {"user_id": user_id, "is_premium": True, "reason": body.reason if body else ""}
+
+
+# ── Bug Reports (User Submission) ──────────────────────────────────────────
+@app.post("/api/bug-reports", status_code=201)
+def create_bug_report(body: BugReportIn, user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    """Submit a bug report or feature request."""
+    if not body.title.strip():
+        raise HTTPException(400, "Title is required")
+    if not body.description.strip():
+        raise HTTPException(400, "Description is required")
+    if body.report_type not in ["bug", "feature"]:
+        raise HTTPException(400, "Report type must be 'bug' or 'feature'")
+
+    report = BugReport(
+        user_id=user.id,
+        report_type=BugReportType(body.report_type),
+        title=body.title.strip(),
+        description=body.description.strip(),
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return {
+        "id": report.id,
+        "user_id": report.user_id,
+        "username": user.username,
+        "report_type": report.report_type.value,
+        "title": report.title,
+        "description": report.description,
+        "status": report.status.value,
+        "created_at": report.created_at,
+        "updated_at": report.updated_at,
+    }
+
+
+@app.get("/api/bug-reports")
+def list_my_bug_reports(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List bug reports submitted by the current user."""
+    reports = (db.query(BugReport)
+               .filter(BugReport.user_id == user.id)
+               .order_by(BugReport.created_at.desc())
+               .limit(50).all())
+    return [{
+        "id": r.id,
+        "user_id": r.user_id,
+        "username": user.username,
+        "report_type": r.report_type.value,
+        "title": r.title,
+        "description": r.description,
+        "status": r.status.value,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+        "reply_count": len(r.replies),
+    } for r in reports]
+
+
+@app.get("/api/bug-reports/{report_id}")
+def get_bug_report(report_id: int, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Get a specific bug report with all replies."""
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if report.user_id != user.id and not user.is_admin:
+        raise HTTPException(403, "Access denied")
+
+    return {
+        "id": report.id,
+        "user_id": report.user_id,
+        "username": report.user.username,
+        "report_type": report.report_type.value,
+        "title": report.title,
+        "description": report.description,
+        "status": report.status.value,
+        "created_at": report.created_at,
+        "updated_at": report.updated_at,
+        "replies": [{
+            "id": reply.id,
+            "report_id": reply.report_id,
+            "user_id": reply.user_id,
+            "username": reply.user.username,
+            "is_admin_reply": reply.is_admin_reply,
+            "content": reply.content,
+            "created_at": reply.created_at,
+        } for reply in report.replies],
+    }
+
+
+@app.post("/api/bug-reports/{report_id}/reply", status_code=201)
+def reply_to_bug_report(report_id: int, body: BugReportReplyIn,
+                        user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Reply to a bug report (users can reply to their own reports)."""
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if report.user_id != user.id and not user.is_admin:
+        raise HTTPException(403, "Access denied")
+    if not body.content.strip():
+        raise HTTPException(400, "Reply content is required")
+
+    reply = BugReportReply(
+        report_id=report_id,
+        user_id=user.id,
+        is_admin_reply=user.is_admin,
+        content=body.content.strip(),
+    )
+    db.add(reply)
+    db.commit()
+    db.refresh(reply)
+    return {
+        "id": reply.id,
+        "report_id": reply.report_id,
+        "user_id": reply.user_id,
+        "username": user.username,
+        "is_admin_reply": reply.is_admin_reply,
+        "content": reply.content,
+        "created_at": reply.created_at,
+    }
+
+
+# ── Bug Reports (Admin) ────────────────────────────────────────────────────
+@app.get("/api/admin/bug-reports/stats")
+def admin_bug_report_stats(_: None = Depends(require_admin), db: Session = Depends(get_db)):
+    """Get statistics about bug reports."""
+    total = db.query(BugReport).count()
+    open_count = db.query(BugReport).filter(BugReport.status == BugReportStatus.open).count()
+    in_progress = db.query(BugReport).filter(BugReport.status == BugReportStatus.in_progress).count()
+    resolved = db.query(BugReport).filter(BugReport.status == BugReportStatus.resolved).count()
+    closed = db.query(BugReport).filter(BugReport.status == BugReportStatus.closed).count()
+    bugs = db.query(BugReport).filter(BugReport.report_type == BugReportType.bug).count()
+    features = db.query(BugReport).filter(BugReport.report_type == BugReportType.feature).count()
+
+    return {
+        "total": total,
+        "open": open_count,
+        "in_progress": in_progress,
+        "resolved": resolved,
+        "closed": closed,
+        "bugs": bugs,
+        "features": features,
+    }
+
+
+@app.get("/api/admin/bug-reports")
+def admin_list_bug_reports(status: Optional[str] = None, _: None = Depends(require_admin),
+                            db: Session = Depends(get_db)):
+    """List all bug reports for admin review."""
+    query = db.query(BugReport).order_by(BugReport.created_at.desc())
+    if status:
+        try:
+            status_enum = BugReportStatus(status)
+            query = query.filter(BugReport.status == status_enum)
+        except ValueError:
+            pass  # Ignore invalid status filter
+    reports = query.limit(100).all()
+    return [{
+        "id": r.id,
+        "user_id": r.user_id,
+        "username": r.user.username,
+        "report_type": r.report_type.value,
+        "title": r.title,
+        "description": r.description,
+        "status": r.status.value,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+        "reply_count": len(r.replies),
+    } for r in reports]
+
+
+@app.get("/api/admin/bug-reports/{report_id}")
+def admin_get_bug_report(report_id: int, _: None = Depends(require_admin),
+                         db: Session = Depends(get_db)):
+    """Get a specific bug report with all replies (admin view)."""
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+
+    return {
+        "id": report.id,
+        "user_id": report.user_id,
+        "username": report.user.username,
+        "report_type": report.report_type.value,
+        "title": report.title,
+        "description": report.description,
+        "status": report.status.value,
+        "created_at": report.created_at,
+        "updated_at": report.updated_at,
+        "replies": [{
+            "id": reply.id,
+            "report_id": reply.report_id,
+            "user_id": reply.user_id,
+            "username": reply.user.username,
+            "is_admin_reply": reply.is_admin_reply,
+            "content": reply.content,
+            "created_at": reply.created_at,
+        } for reply in report.replies],
+    }
+
+
+@app.post("/api/admin/bug-reports/{report_id}/reply", status_code=201)
+def admin_reply_to_bug_report(report_id: int, body: BugReportReplyIn,
+                               x_admin_key: str = Header(default=""),
+                               db: Session = Depends(get_db)):
+    """Admin reply to a bug report."""
+    if x_admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if not body.content.strip():
+        raise HTTPException(400, "Reply content is required")
+
+    # Find or create admin user for the reply
+    admin_user = db.query(User).filter(User.is_admin == True).first()
+    if not admin_user:
+        # Use user_id 0 or create a system user
+        admin_user_id = 0
+    else:
+        admin_user_id = admin_user.id
+
+    reply = BugReportReply(
+        report_id=report_id,
+        user_id=admin_user_id if admin_user else report.user_id,
+        is_admin_reply=True,
+        content=body.content.strip(),
+    )
+    db.add(reply)
+    db.commit()
+    db.refresh(reply)
+    return {
+        "id": reply.id,
+        "report_id": reply.report_id,
+        "user_id": reply.user_id,
+        "username": "Admin",
+        "is_admin_reply": True,
+        "content": reply.content,
+        "created_at": reply.created_at,
+    }
+
+
+@app.patch("/api/admin/bug-reports/{report_id}/status")
+def admin_update_bug_report_status(report_id: int, new_status: str,
+                                    _: None = Depends(require_admin),
+                                    db: Session = Depends(get_db)):
+    """Update the status of a bug report."""
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+
+    try:
+        status_enum = BugReportStatus(new_status)
+    except ValueError:
+        raise HTTPException(400, f"Invalid status. Must be one of: {[s.value for s in BugReportStatus]}")
+
+    report.status = status_enum
+    db.commit()
+    db.refresh(report)
+    return {
+        "id": report.id,
+        "status": report.status.value,
+        "updated_at": report.updated_at,
+    }
+
 
 # ── Haversine helper ───────────────────────────────────────────────────────
 import math as _math
