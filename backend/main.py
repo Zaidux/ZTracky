@@ -4,7 +4,7 @@ Endpoints: auth · tracking requests · locations · premium · SMS lost-mode ·
            Stripe payments · Ethereum crypto verification · WebAuthn 2FA ·
            Stripe Connect payouts · admin stats · admin wallet audit
 """
-import os, secrets, hashlib, base64, json, enum
+import os, secrets, hashlib, hmac, base64, json, enum, time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -88,9 +88,11 @@ def startup():
 
 
 # ── Dependencies ───────────────────────────────────────────────────────────
+_API_KEY_HMAC_SECRET = os.environ.get("JWT_SECRET", "ztracky-secret-key-change-in-production")
+
 def _hash_api_key(raw_key: str) -> str:
-    """Hash an API key using SHA-256."""
-    return hashlib.sha256(raw_key.encode()).hexdigest()
+    """Hash an API key using HMAC-SHA256 with a server secret."""
+    return hmac.new(_API_KEY_HMAC_SECRET.encode(), raw_key.encode(), hashlib.sha256).hexdigest()
 
 
 def get_current_user(
@@ -146,7 +148,27 @@ def require_transfer_token(x_transfer_token: str = Header(default=""), db: Sessi
     return uid
 
 # Short-lived API-key-creation tokens issued after WebAuthn success
-_apikey_auth_tokens: dict[str, int] = {}   # token → user_id
+# Stores (user_id, expiry_timestamp) to prevent indefinite accumulation
+_apikey_auth_tokens: dict[str, tuple[int, float]] = {}  # token → (user_id, expiry_ts)
+
+def _store_apikey_auth_token(token: str, user_id: int, ttl_seconds: int = 120):
+    """Store an API-key-creation auth token with expiry."""
+    _apikey_auth_tokens[token] = (user_id, time.time() + ttl_seconds)
+    # Prune expired tokens
+    now = time.time()
+    expired = [k for k, (_, exp) in _apikey_auth_tokens.items() if exp < now]
+    for k in expired:
+        _apikey_auth_tokens.pop(k, None)
+
+def _pop_apikey_auth_token(token: str) -> Optional[int]:
+    """Pop and validate an API-key-creation auth token. Returns user_id or None."""
+    entry = _apikey_auth_tokens.pop(token, None)
+    if entry is None:
+        return None
+    user_id, expiry = entry
+    if time.time() > expiry:
+        return None  # Token expired
+    return user_id
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────
@@ -881,7 +903,7 @@ def user_webauthn_auth_verify(body: WebAuthnAuthVerifyIn, current: User = Depend
 
     # Issue a short-lived token for API key creation (single-use, valid 120 s)
     auth_token = secrets.token_urlsafe(32)
-    _apikey_auth_tokens[auth_token] = current.id
+    _store_apikey_auth_token(auth_token, current.id, ttl_seconds=120)
     return {"auth_token": auth_token, "expires_in": 120}
 
 
@@ -893,7 +915,7 @@ def create_api_key(body: CreateApiKeyIn,
                    db: Session = Depends(get_db)):
     """Create a new API key. Requires a valid auth token from WebAuthn verification."""
     # Verify the auth token
-    token_user_id = _apikey_auth_tokens.pop(x_auth_token, None)
+    token_user_id = _pop_apikey_auth_token(x_auth_token)
     if token_user_id is None or token_user_id != user.id:
         raise HTTPException(403, "Invalid or expired auth token. Complete fingerprint verification first.")
 

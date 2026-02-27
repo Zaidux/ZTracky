@@ -1598,6 +1598,9 @@ function copyApiKey() {
   const key = document.getElementById('apikey-value').textContent;
   navigator.clipboard.writeText(key).then(() => {
     alert('API key copied to clipboard!');
+  }).catch(() => {
+    // Fallback for browsers without clipboard API or missing HTTPS
+    prompt('Copy this API key manually:', key);
   });
 }
 

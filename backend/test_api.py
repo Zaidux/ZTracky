@@ -700,7 +700,7 @@ class TestApiKeys:
 
     def test_api_key_full_flow(self):
         """Test creating an API key via simulated auth token and then using it."""
-        from main import _apikey_auth_tokens, _hash_api_key
+        from main import _store_apikey_auth_token, _hash_api_key
         from database import ApiKey, SessionLocal
         import secrets as _secrets
 
@@ -710,7 +710,7 @@ class TestApiKeys:
 
         # Simulate WebAuthn success by injecting an auth token
         fake_token = _secrets.token_urlsafe(32)
-        _apikey_auth_tokens[fake_token] = user_id
+        _store_apikey_auth_token(fake_token, user_id)
 
         # Create API key
         r = client.post("/api/api-keys", json={
@@ -740,7 +740,7 @@ class TestApiKeys:
         assert r.json()["username"] == "alice"
 
     def test_revoke_api_key(self):
-        from main import _apikey_auth_tokens
+        from main import _store_apikey_auth_token
         import secrets as _secrets
 
         data = register("alice", "alice@test.com", "pass123")
@@ -749,7 +749,7 @@ class TestApiKeys:
 
         # Create key
         fake_token = _secrets.token_urlsafe(32)
-        _apikey_auth_tokens[fake_token] = user_id
+        _store_apikey_auth_token(fake_token, user_id)
         r = client.post("/api/api-keys", json={
             "label": "Revoke test", "scopes": ["read"]
         }, headers={**ha, "X-Auth-Token": fake_token})
