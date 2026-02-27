@@ -415,6 +415,63 @@
         <button class="btn-save" onclick="saveSettings()">💾 Save &amp; Apply</button>
         <div id="settings-saved" class="message success" style="display:none">Settings saved and applied!</div>
 
+        <!-- API Keys Section -->
+        <div style="margin-top:36px;border-top:1px solid var(--border);padding-top:24px">
+          <div class="section-title">🔑 API Keys</div>
+          <p class="setting-hint">Generate API keys for CLI and third-party access. Requires fingerprint/Face ID verification (2FA).</p>
+
+          <!-- 2FA Setup -->
+          <div id="twofa-setup">
+            <div id="twofa-status" class="impact-card" style="margin-bottom:16px">
+              <div class="impact-icon" id="twofa-icon">🔒</div>
+              <div class="impact-body">
+                <strong id="twofa-label">2FA Not Set Up</strong>
+                <span id="twofa-desc">Register your fingerprint to create API keys</span>
+              </div>
+            </div>
+            <button class="btn-save" id="btn-register-fingerprint" onclick="registerFingerprint()">🖐 Register Fingerprint / Face ID</button>
+            <div id="twofa-msg" class="message" style="display:none"></div>
+          </div>
+
+          <!-- Create API Key (visible after 2FA setup) -->
+          <div id="apikey-create-section" style="display:none;margin-top:20px">
+            <div class="section-title" style="font-size:.9rem">✨ Create New API Key</div>
+            <div class="input-row" style="margin-bottom:10px">
+              <input id="apikey-label" type="text" placeholder="Key label (e.g. My Laptop CLI)" style="flex:1"/>
+            </div>
+            <div style="margin-bottom:14px">
+              <span class="setting-hint" style="display:block;margin-bottom:8px">Permissions:</span>
+              <div class="perms-checkboxes" id="apikey-scopes">
+                <label class="perm-check"><input type="checkbox" value="read" checked disabled/> 📖 Read (always on)</label>
+                <label class="perm-check"><input type="checkbox" value="write"/> ✏️ Write</label>
+                <label class="perm-check"><input type="checkbox" value="location"/> 📍 Location</label>
+                <label class="perm-check"><input type="checkbox" value="friends"/> 👥 Friends</label>
+                <label class="perm-check"><input type="checkbox" value="chat"/> 💬 Chat</label>
+                <label class="perm-check"><input type="checkbox" value="tracking"/> 📡 Tracking</label>
+                <label class="perm-check"><input type="checkbox" value="reports"/> 🐛 Reports</label>
+              </div>
+            </div>
+            <button class="btn-save" onclick="createApiKey()">🔑 Generate API Key (requires fingerprint)</button>
+            <div id="apikey-create-msg" class="message" style="display:none"></div>
+          </div>
+
+          <!-- Show generated key (one-time display) -->
+          <div id="apikey-reveal" class="api-key-reveal" style="display:none;margin-top:16px">
+            <div class="section-title" style="font-size:.85rem;color:#f59e0b">⚠️ Copy this key now — it won't be shown again!</div>
+            <div class="api-key-display">
+              <code id="apikey-value"></code>
+              <button onclick="copyApiKey()" title="Copy to clipboard">📋</button>
+            </div>
+          </div>
+
+          <!-- Existing keys -->
+          <div style="margin-top:20px">
+            <div class="section-title" style="font-size:.9rem">📋 Your API Keys</div>
+            <button class="btn-refresh" onclick="loadApiKeys()" style="margin-bottom:10px">↺ Refresh</button>
+            <div id="apikey-list"><p class="empty">No API keys yet</p></div>
+          </div>
+        </div>
+
       </div>
     </div>
 

@@ -37,7 +37,10 @@ pip install .
 # Create a new account
 ztracky register
 
-# Log in to your account
+# Log in with API key (recommended — generate in web app Settings > API Keys)
+ztracky login --api-key ztk_YOUR_KEY
+
+# Log in with password (fallback)
 ztracky login
 
 # Log out

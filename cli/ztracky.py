@@ -209,35 +209,71 @@ def cli():
 
 
 @cli.command()
-def login():
-    """Authenticate with ZTracky server."""
+@click.option("--api-key", "-k", default=None, help="Authenticate using an API key instead of password")
+def login(api_key):
+    """Authenticate with ZTracky server.
+    
+    Use --api-key to authenticate with an API key (recommended).
+    Generate API keys in the web app under Settings > API Keys after setting up 2FA.
+    """
     print_banner()
     
     console.print("\n[bold cyan]▸ LOGIN[/bold cyan]\n")
     
-    username = Prompt.ask("[cyan]Username[/cyan]")
-    password = Prompt.ask("[cyan]Password[/cyan]", password=True)
-    
-    with console.status("[bold green]Connecting to ZTracky...[/bold green]"):
-        resp = requests.post(
-            f"{get_api_base()}/api/login",
-            data={"username": username, "password": password},
-            timeout=10
-        )
-    
-    if resp.ok:
-        data = resp.json()
-        save_config({
-            "token": data["access_token"],
-            "user": data["user"],
-            "api_base": get_api_base(),
-        })
-        print_success(f"Welcome back, [bold]{data['user']['username']}[/bold]!")
+    if api_key:
+        # API key authentication
+        console.print("[dim]Authenticating with API key...[/dim]")
+        with console.status("[bold green]Connecting to ZTracky...[/bold green]"):
+            resp = requests.post(
+                f"{get_api_base()}/api/login/api-key",
+                headers={"X-API-Key": api_key},
+                timeout=10
+            )
         
-        if data["user"].get("is_premium"):
-            console.print("[yellow]⭐ Premium account[/yellow]")
+        if resp.ok:
+            data = resp.json()
+            save_config({
+                "token": data["access_token"],
+                "user": data["user"],
+                "api_base": get_api_base(),
+                "auth_method": "api_key",
+                "key_scopes": data.get("key_scopes", ""),
+            })
+            print_success(f"Welcome back, [bold]{data['user']['username']}[/bold]!")
+            console.print(f"[dim]Scopes: {data.get('key_scopes', 'all')}[/dim]")
+            
+            if data["user"].get("is_premium"):
+                console.print("[yellow]⭐ Premium account[/yellow]")
+        else:
+            print_error("Login failed: " + resp.json().get("detail", "Invalid API key"))
     else:
-        print_error("Login failed: " + resp.json().get("detail", "Invalid credentials"))
+        # Password authentication (fallback)
+        console.print("[dim]Tip: Use [bold]ztracky login --api-key YOUR_KEY[/bold] for API key auth (recommended)[/dim]\n")
+        
+        username = Prompt.ask("[cyan]Username[/cyan]")
+        password = Prompt.ask("[cyan]Password[/cyan]", password=True)
+        
+        with console.status("[bold green]Connecting to ZTracky...[/bold green]"):
+            resp = requests.post(
+                f"{get_api_base()}/api/login",
+                data={"username": username, "password": password},
+                timeout=10
+            )
+        
+        if resp.ok:
+            data = resp.json()
+            save_config({
+                "token": data["access_token"],
+                "user": data["user"],
+                "api_base": get_api_base(),
+                "auth_method": "password",
+            })
+            print_success(f"Welcome back, [bold]{data['user']['username']}[/bold]!")
+            
+            if data["user"].get("is_premium"):
+                console.print("[yellow]⭐ Premium account[/yellow]")
+        else:
+            print_error("Login failed: " + resp.json().get("detail", "Invalid credentials"))
 
 
 @cli.command()
@@ -254,6 +290,7 @@ def status():
     print_banner()
     
     user = get_user()
+    config = load_config()
     console.print("\n[bold cyan]▸ STATUS[/bold cyan]\n")
     
     # User info
@@ -264,6 +301,10 @@ def status():
     table.add_row("User", user.get("username", "Unknown"))
     table.add_row("Email", user.get("email", "Unknown"))
     table.add_row("Premium", "[green]✓ Active[/green]" if user.get("is_premium") else "[dim]Free Plan[/dim]")
+    auth_method = config.get("auth_method", "password")
+    table.add_row("Auth", "[green]🔑 API Key[/green]" if auth_method == "api_key" else "[dim]Password[/dim]")
+    if auth_method == "api_key" and config.get("key_scopes"):
+        table.add_row("Scopes", config["key_scopes"])
     table.add_row("Server", get_api_base())
     
     console.print(Panel(table, title="[bold]Account[/bold]", border_style="cyan"))

@@ -660,3 +660,111 @@ class TestBugReports:
         assert r.json()["total"] >= 1
         assert "bugs" in r.json()
         assert "features" in r.json()
+
+
+# ── API Key tests ───────────────────────────────────────────────────────────
+
+class TestApiKeys:
+    def test_check_has_credentials_none(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.get("/api/webauthn/has-credentials", headers=ha)
+        assert r.status_code == 200
+        assert r.json()["has_credentials"] is False
+        assert r.json()["count"] == 0
+
+    def test_list_scopes(self):
+        r = client.get("/api/api-keys/scopes")
+        assert r.status_code == 200
+        assert "read" in r.json()["scopes"]
+        assert "location" in r.json()["scopes"]
+
+    def test_create_api_key_requires_auth_token(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.post("/api/api-keys", json={
+            "label": "My CLI", "scopes": ["read", "location"]
+        }, headers={**ha, "X-Auth-Token": "invalid-token"})
+        assert r.status_code == 403
+
+    def test_list_api_keys_empty(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.get("/api/api-keys", headers=ha)
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_login_with_invalid_api_key(self):
+        r = client.post("/api/login/api-key", headers={"X-API-Key": "invalid-key"})
+        assert r.status_code == 401
+
+    def test_api_key_full_flow(self):
+        """Test creating an API key via simulated auth token and then using it."""
+        from main import _apikey_auth_tokens, _hash_api_key
+        from database import ApiKey, SessionLocal
+        import secrets as _secrets
+
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        user_id = data["user"]["id"]
+
+        # Simulate WebAuthn success by injecting an auth token
+        fake_token = _secrets.token_urlsafe(32)
+        _apikey_auth_tokens[fake_token] = user_id
+
+        # Create API key
+        r = client.post("/api/api-keys", json={
+            "label": "Test CLI Key", "scopes": ["read", "location", "friends"]
+        }, headers={**ha, "X-Auth-Token": fake_token})
+        assert r.status_code == 201
+        assert r.json()["key"].startswith("ztk_")
+        raw_key = r.json()["key"]
+        assert r.json()["label"] == "Test CLI Key"
+        assert "read" in r.json()["scopes"]
+
+        # List keys
+        r = client.get("/api/api-keys", headers=ha)
+        assert r.status_code == 200
+        assert len(r.json()) == 1
+        assert r.json()[0]["label"] == "Test CLI Key"
+
+        # Login with API key
+        r = client.post("/api/login/api-key", headers={"X-API-Key": raw_key})
+        assert r.status_code == 200
+        assert r.json()["user"]["username"] == "alice"
+        assert "read" in r.json()["key_scopes"]
+
+        # Use API key directly as auth (X-API-Key header)
+        r = client.get("/api/me", headers={"Authorization": "Bearer dummy", "X-API-Key": raw_key})
+        assert r.status_code == 200
+        assert r.json()["username"] == "alice"
+
+    def test_revoke_api_key(self):
+        from main import _apikey_auth_tokens
+        import secrets as _secrets
+
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        user_id = data["user"]["id"]
+
+        # Create key
+        fake_token = _secrets.token_urlsafe(32)
+        _apikey_auth_tokens[fake_token] = user_id
+        r = client.post("/api/api-keys", json={
+            "label": "Revoke test", "scopes": ["read"]
+        }, headers={**ha, "X-Auth-Token": fake_token})
+        key_id = r.json()["id"]
+        raw_key = r.json()["key"]
+
+        # Revoke
+        r = client.delete(f"/api/api-keys/{key_id}", headers=ha)
+        assert r.status_code == 204
+
+        # Can no longer login with revoked key
+        r = client.post("/api/login/api-key", headers={"X-API-Key": raw_key})
+        assert r.status_code == 401
+
+        # List should be empty
+        r = client.get("/api/api-keys", headers=ha)
+        assert r.status_code == 200
+        assert len(r.json()) == 0

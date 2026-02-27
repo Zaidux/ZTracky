@@ -4,7 +4,7 @@ Endpoints: auth · tracking requests · locations · premium · SMS lost-mode ·
            Stripe payments · Ethereum crypto verification · WebAuthn 2FA ·
            Stripe Connect payouts · admin stats · admin wallet audit
 """
-import os, secrets, base64, json, enum
+import os, secrets, hashlib, base64, json, enum
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -19,6 +19,7 @@ from database import (
     Payment, LostDevice, WebAuthnCredential, StripeConnectAccount,
     AdminTransaction, RequestStatus, Geofence, GeofenceAlert, ChatMessage,
     CallTrackingEvent, BugReport, BugReportReply, BugReportType, BugReportStatus,
+    ApiKey, API_KEY_SCOPES,
 )
 from auth import hash_password, verify_password, create_access_token, decode_token
 
@@ -87,7 +88,36 @@ def startup():
 
 
 # ── Dependencies ───────────────────────────────────────────────────────────
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def _hash_api_key(raw_key: str) -> str:
+    """Hash an API key using SHA-256."""
+    return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+def get_current_user(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    # Check for API key in X-API-Key header first
+    api_key_raw = request.headers.get("x-api-key", "")
+    if api_key_raw:
+        key_hash = _hash_api_key(api_key_raw)
+        api_key = db.query(ApiKey).filter(
+            ApiKey.key_hash == key_hash,
+            ApiKey.is_active == True,
+        ).first()
+        if not api_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+        api_key.last_used_at = datetime.now(timezone.utc)
+        db.commit()
+        user = db.query(User).filter(User.id == api_key.user_id).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        # Attach scopes to the request state for downstream permission checks
+        request.state.api_key_scopes = set(api_key.scopes.split(","))
+        return user
+
+    # Fall back to JWT token
     payload = decode_token(token)
     if not payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
@@ -114,6 +144,9 @@ def require_transfer_token(x_transfer_token: str = Header(default=""), db: Sessi
     if uid is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or expired transfer token. Complete biometric auth first.")
     return uid
+
+# Short-lived API-key-creation tokens issued after WebAuthn success
+_apikey_auth_tokens: dict[str, int] = {}   # token → user_id
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────
@@ -246,6 +279,21 @@ class BugReportReplyOut(BaseModel):
 class AdminGrantPremiumIn(BaseModel):
     reason: str = ""  # Optional reason for granting free premium
 
+# ── API Key Schemas ────────────────────────────────────────────────────────
+class CreateApiKeyIn(BaseModel):
+    label: str = "CLI"
+    scopes: List[str] = ["read"]  # List of permission scopes
+
+class ApiKeyOut(BaseModel):
+    id: int
+    key_prefix: str
+    label: str
+    scopes: str
+    is_active: bool
+    last_used_at: Optional[datetime] = None
+    created_at: datetime
+    class Config: from_attributes = True
+
 
 # ── Auth ───────────────────────────────────────────────────────────────────
 @app.post("/api/register", status_code=201)
@@ -265,6 +313,31 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     if not user or not verify_password(form.password, user.password_hash):
         raise HTTPException(400, "Invalid credentials")
     return {"access_token": create_access_token({"sub": str(user.id)}), "token_type": "bearer", "user": user}
+
+
+@app.post("/api/login/api-key")
+def login_with_api_key(x_api_key: str = Header(default=""), db: Session = Depends(get_db)):
+    """Authenticate using an API key. Returns a JWT token for session use."""
+    if not x_api_key:
+        raise HTTPException(400, "X-API-Key header required")
+    key_hash = _hash_api_key(x_api_key)
+    api_key = db.query(ApiKey).filter(
+        ApiKey.key_hash == key_hash,
+        ApiKey.is_active == True,
+    ).first()
+    if not api_key:
+        raise HTTPException(401, "Invalid API key")
+    api_key.last_used_at = datetime.now(timezone.utc)
+    db.commit()
+    user = db.query(User).filter(User.id == api_key.user_id).first()
+    if not user:
+        raise HTTPException(401, "User not found")
+    return {
+        "access_token": create_access_token({"sub": str(user.id)}),
+        "token_type": "bearer",
+        "user": user,
+        "key_scopes": api_key.scopes,
+    }
 
 
 @app.get("/api/me")
@@ -692,6 +765,209 @@ def webauthn_auth_verify(body: WebAuthnAuthVerifyIn, current: User = Depends(get
     transfer_token = secrets.token_urlsafe(32)
     _transfer_tokens[transfer_token] = current.id
     return {"transfer_token": transfer_token, "expires_in": 60}
+
+
+# ── User WebAuthn 2FA (for API key creation) ───────────────────────────────
+@app.get("/api/webauthn/register-options")
+def user_webauthn_reg_options(current: User = Depends(get_current_user)):
+    """Get WebAuthn registration options for the current user (fingerprint/face ID setup)."""
+    if not _webauthn_ok:
+        raise HTTPException(503, "WebAuthn library not available")
+    opts = generate_registration_options(
+        rp_id=RP_ID, rp_name=RP_NAME,
+        user_id=str(current.id).encode(), user_name=current.username,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            user_verification=UserVerificationRequirement.REQUIRED),
+        supported_pub_key_algs=[COSEAlgorithmIdentifier.ECDSA_SHA_256,
+                                 COSEAlgorithmIdentifier.RSASSA_PKCS1_v1_5_SHA_256],
+    )
+    _reg_challenges[current.id] = opts.challenge
+    import webauthn.helpers.cbor as _cbor
+    return json.loads(opts.json())
+
+
+@app.post("/api/webauthn/register-verify")
+def user_webauthn_reg_verify(body: WebAuthnRegVerifyIn, current: User = Depends(get_current_user),
+                             db: Session = Depends(get_db)):
+    """Verify WebAuthn registration for the current user."""
+    if not _webauthn_ok:
+        raise HTTPException(503, "WebAuthn library not available")
+    challenge = _reg_challenges.pop(current.id, None)
+    if not challenge:
+        raise HTTPException(400, "No pending challenge")
+    try:
+        verification = verify_registration_response(
+            credential=body.credential,
+            expected_challenge=challenge,
+            expected_rp_id=RP_ID,
+            expected_origin=f"http://{RP_ID}",
+            require_user_verification=True,
+        )
+    except Exception as e:
+        raise HTTPException(400, f"WebAuthn verification failed: {e}")
+
+    cred_id = base64.urlsafe_b64encode(verification.credential_id).rstrip(b"=").decode()
+    pub_key = base64.urlsafe_b64encode(verification.credential_public_key).rstrip(b"=").decode()
+
+    existing = db.query(WebAuthnCredential).filter(WebAuthnCredential.credential_id == cred_id).first()
+    if not existing:
+        db.add(WebAuthnCredential(user_id=current.id, credential_id=cred_id,
+                                  public_key=pub_key, sign_count=verification.sign_count,
+                                  aaguid=str(verification.aaguid) if verification.aaguid else None))
+        db.commit()
+    return {"registered": True}
+
+
+@app.get("/api/webauthn/has-credentials")
+def user_has_webauthn(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Check if the current user has registered any WebAuthn credentials (2FA)."""
+    count = db.query(WebAuthnCredential).filter(WebAuthnCredential.user_id == current.id).count()
+    return {"has_credentials": count > 0, "count": count}
+
+
+@app.get("/api/webauthn/auth-options")
+def user_webauthn_auth_options(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get WebAuthn authentication options for the current user (fingerprint verify)."""
+    if not _webauthn_ok:
+        raise HTTPException(503, "WebAuthn library not available")
+    creds = db.query(WebAuthnCredential).filter(WebAuthnCredential.user_id == current.id).all()
+    if not creds:
+        raise HTTPException(400, "No 2FA credentials registered. Set up fingerprint first.")
+    allow = [PublicKeyCredentialDescriptor(
+                 id=base64.urlsafe_b64decode(c.credential_id + "=="))
+             for c in creds]
+    opts = generate_authentication_options(
+        rp_id=RP_ID, allow_credentials=allow,
+        user_verification=UserVerificationRequirement.REQUIRED)
+    _auth_challenges[current.id] = opts.challenge
+    return json.loads(opts.json())
+
+
+@app.post("/api/webauthn/auth-verify")
+def user_webauthn_auth_verify(body: WebAuthnAuthVerifyIn, current: User = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    """Verify WebAuthn authentication and issue a short-lived API-key-creation token."""
+    if not _webauthn_ok:
+        raise HTTPException(503, "WebAuthn library not available")
+    challenge = _auth_challenges.pop(current.id, None)
+    if not challenge:
+        raise HTTPException(400, "No pending challenge")
+
+    cred_id_raw = base64.urlsafe_b64decode(
+        body.credential.get("id", "") + "==")
+    cred_id_b64 = base64.urlsafe_b64encode(cred_id_raw).rstrip(b"=").decode()
+    stored = db.query(WebAuthnCredential).filter(
+        WebAuthnCredential.credential_id == cred_id_b64,
+        WebAuthnCredential.user_id == current.id).first()
+    if not stored:
+        raise HTTPException(400, "Credential not found")
+
+    pub_key_bytes = base64.urlsafe_b64decode(stored.public_key + "==")
+    try:
+        verification = verify_authentication_response(
+            credential=body.credential,
+            expected_challenge=challenge,
+            expected_rp_id=RP_ID,
+            expected_origin=f"http://{RP_ID}",
+            credential_public_key=pub_key_bytes,
+            credential_current_sign_count=stored.sign_count,
+            require_user_verification=True,
+        )
+    except Exception as e:
+        raise HTTPException(400, f"WebAuthn auth failed: {e}")
+
+    stored.sign_count = verification.new_sign_count
+    db.commit()
+
+    # Issue a short-lived token for API key creation (single-use, valid 120 s)
+    auth_token = secrets.token_urlsafe(32)
+    _apikey_auth_tokens[auth_token] = current.id
+    return {"auth_token": auth_token, "expires_in": 120}
+
+
+# ── API Key Management ─────────────────────────────────────────────────────
+@app.post("/api/api-keys", status_code=201)
+def create_api_key(body: CreateApiKeyIn,
+                   x_auth_token: str = Header(default=""),
+                   user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Create a new API key. Requires a valid auth token from WebAuthn verification."""
+    # Verify the auth token
+    token_user_id = _apikey_auth_tokens.pop(x_auth_token, None)
+    if token_user_id is None or token_user_id != user.id:
+        raise HTTPException(403, "Invalid or expired auth token. Complete fingerprint verification first.")
+
+    # Validate scopes
+    valid_scopes = []
+    for scope in body.scopes:
+        if scope in API_KEY_SCOPES:
+            valid_scopes.append(scope)
+    if not valid_scopes:
+        raise HTTPException(400, f"At least one valid scope required. Available: {API_KEY_SCOPES}")
+
+    # Generate the key
+    raw_key = f"ztk_{secrets.token_urlsafe(32)}"
+    key_hash = _hash_api_key(raw_key)
+    key_prefix = raw_key[:12]
+
+    api_key = ApiKey(
+        user_id=user.id,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        label=body.label[:50],
+        scopes=",".join(valid_scopes),
+    )
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+
+    # Return the full key ONLY at creation time
+    return {
+        "id": api_key.id,
+        "key": raw_key,     # Only shown once!
+        "key_prefix": key_prefix,
+        "label": api_key.label,
+        "scopes": api_key.scopes,
+        "created_at": api_key.created_at,
+    }
+
+
+@app.get("/api/api-keys")
+def list_api_keys(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List all API keys for the current user (prefix only, not full key)."""
+    keys = db.query(ApiKey).filter(
+        ApiKey.user_id == user.id,
+        ApiKey.is_active == True,
+    ).order_by(ApiKey.created_at.desc()).all()
+    return [{
+        "id": k.id,
+        "key_prefix": k.key_prefix,
+        "label": k.label,
+        "scopes": k.scopes,
+        "is_active": k.is_active,
+        "last_used_at": k.last_used_at,
+        "created_at": k.created_at,
+    } for k in keys]
+
+
+@app.delete("/api/api-keys/{key_id}", status_code=204)
+def revoke_api_key(key_id: int, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Revoke (deactivate) an API key."""
+    key = db.query(ApiKey).filter(
+        ApiKey.id == key_id,
+        ApiKey.user_id == user.id,
+    ).first()
+    if not key:
+        raise HTTPException(404, "API key not found")
+    key.is_active = False
+    db.commit()
+
+
+@app.get("/api/api-keys/scopes")
+def list_available_scopes():
+    """List all available API key permission scopes."""
+    return {"scopes": API_KEY_SCOPES}
 
 
 # ── Admin Wallet — Crypto Transfers ────────────────────────────────────────

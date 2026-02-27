@@ -89,9 +89,14 @@ ZTracky includes a powerful command-line interface for terminal enthusiasts. Int
 # Install CLI
 cd cli && pip install -e .
 
+# Authenticate with API key (recommended — generate in Settings > API Keys after 2FA setup)
+ztracky login --api-key ztk_YOUR_API_KEY
+
+# Or use password (fallback)
+ztracky login
+
 # Commands
-ztracky login           # Authenticate
-ztracky status          # Show account status
+ztracky status          # Show account status + auth method
 ztracky track           # Real-time tracking dashboard
 ztracky friends         # List friends
 ztracky locate alice    # Get friend's location
@@ -99,6 +104,37 @@ ztracky chat alice      # Chat with friend (premium)
 ztracky requests        # Manage friend requests
 ztracky submit-bug      # Submit bug report
 ztracky premium         # Check premium status
+```
+
+---
+
+## 🔑 API Key Authentication
+
+API keys provide secure, scoped access for CLI and third-party integrations without exposing your password.
+
+### Setup Flow
+1. **Set up 2FA** — Go to Settings > API Keys and register your fingerprint / Face ID
+2. **Create API key** — Click "Generate API Key", verify with fingerprint, and choose permissions
+3. **Use in CLI** — `ztracky login --api-key ztk_YOUR_KEY`
+
+### Available Permission Scopes
+| Scope | Description |
+|---|---|
+| `read` | Read profile, friends list, locations (always on) |
+| `write` | Update profile and settings |
+| `location` | Send and receive location updates |
+| `friends` | Send, accept, reject friend requests |
+| `chat` | Send and read chat messages |
+| `tracking` | Real-time tracking features |
+| `reports` | Submit bug reports and feature requests |
+
+### API Key Authentication (HTTP)
+```bash
+# Direct API key header (any endpoint)
+curl -H "X-API-Key: ztk_YOUR_KEY" https://your-server/api/me
+
+# Exchange API key for JWT session token
+curl -X POST -H "X-API-Key: ztk_YOUR_KEY" https://your-server/api/login/api-key
 ```
 
 ---
@@ -168,7 +204,7 @@ docker compose up --build
 ## 🧪 Running Tests
 
 ```bash
-# Python (50 tests)
+# Python (67 tests)
 cd backend
 pip install -r requirements-test.txt
 pytest test_api.py -v
@@ -218,6 +254,8 @@ ZTracky/
 
 - **No card data** is ever stored — Stripe Checkout handles everything
 - **No private keys** — MetaMask signs all blockchain transactions client-side
-- **WebAuthn 2FA** gates every admin financial transfer
+- **WebAuthn 2FA** gates every admin financial transfer and API key creation
+- **API keys** are SHA-256 hashed before storage; raw keys shown only once at creation
+- **Scoped permissions** — API keys carry only the permissions you grant
 - **Geofence privacy** — nearby anonymous devices return distance only, never coordinates
 - CORS is `allow_origins=["*"]` by default; **change to your domain in production**
