@@ -301,6 +301,18 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"online_count":%d}`, count)
 }
 
+func onlineUsersHandler(w http.ResponseWriter, r *http.Request) {
+	hub.mu.RLock()
+	ids := make([]int64, 0, len(hub.clients))
+	for id := range hub.clients {
+		ids = append(ids, id)
+	}
+	hub.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	data, _ := json.Marshal(map[string]interface{}{"user_ids": ids})
+	w.Write(data)
+}
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok","service":"ztracky-location-service"}`))
@@ -312,6 +324,7 @@ func main() {
 	http.HandleFunc("/ws", serveWS)
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/stats", statsHandler)
+	http.HandleFunc("/online-users", onlineUsersHandler)
 
 	log.Printf("ZTracky location service listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil {

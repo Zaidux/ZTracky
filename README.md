@@ -1,213 +1,183 @@
-# ZTracky 📍
+# 📍 ZTracky — Multi-Language Location Tracking App
 
-**Precise, consent-based location sharing with trusted contacts.**
-
-ZTracky lets you send a tracking request to a friend or family member. Once they accept, both of you can see each other's real-time location on a live map — useful for locating a stolen phone, keeping tabs on family, or just knowing where your friends are.
+ZTracky is a real-time, privacy-first location-sharing and device-security platform built with **Python**, **Go**, **JavaScript/HTML/CSS**, and **Solidity**. Friends mutually opt-in before any location is shared.
 
 ---
 
-## Architecture
-
-ZTracky is a **multi-language** application where each component is written in the most appropriate language:
-
-| Service | Language | Role |
-|---|---|---|
-| **REST API** | Python (FastAPI) | Auth, friend requests, location persistence |
-| **Real-time hub** | Go | WebSocket server for live location broadcasting |
-| **Frontend** | HTML + JavaScript | Map UI, geolocation, request management |
-| **Orchestration** | Docker Compose | Ties all services together |
+## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Browser (JS)                      │
-│  ┌─────────────────┐   ┌──────────────────────────┐ │
-│  │  REST API calls  │   │  WebSocket (live location)│ │
-│  └────────┬────────┘   └────────────┬─────────────┘ │
-└───────────┼──────────────────────────┼───────────────┘
-            │                          │
-   ┌─────────▼──────────┐   ┌──────────▼──────────────┐
-   │  Python FastAPI     │   │  Go WebSocket Service   │
-   │  (port 8000)        │   │  (port 8001)            │
-   │                     │   │                         │
-   │  • Register/login   │   │  • JWT auth             │
-   │  • Tracking requests│   │  • Hub (user → conn)    │
-   │  • Location REST    │   │  • Broadcast to friends │
-   │  • SQLite DB        │   │                         │
-   └─────────────────────┘   └─────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  Browser / PWA (JavaScript + HTML + CSS)                │
+│  • Leaflet map  • WebRTC  • MetaMask  • Service Worker  │
+└────────────┬────────────────────────┬───────────────────┘
+             │ REST (HTTP)            │ WebSocket
+             ▼                        ▼
+┌────────────────────┐   ┌───────────────────────────────┐
+│  Python FastAPI    │   │  Go WebSocket Hub             │
+│  :8000             │   │  :8001                        │
+│  • Auth (JWT)      │   │  • Real-time location relay   │
+│  • Tracking reqs   │   │  • WebRTC P2P signalling      │
+│  • Geofences       │   │  • Presence checks            │
+│  • Chat history    │   │  • /stats  /online-users      │
+│  • Payments        │   └───────────────────────────────┘
+│  • Admin           │
+│  • SMS (Twilio)    │   ┌───────────────────────────────┐
+└────────────────────┘   │  Solidity Smart Contract      │
+             │           │  ZTrackySubscription.sol      │
+             ▼           │  • subscribe()  • transferETH │
+      SQLite / Postgres  │  • transferERC20  • withdraw  │
+                         └───────────────────────────────┘
 ```
 
 ---
 
-## Features
+## ✨ Features
 
-- 🔐 **User registration & JWT login**
-- 📨 **Tracking requests** — send, accept, or reject
-- 🗺 **Live map** (OpenStreetMap + Leaflet.js) with friend markers
-- 📡 **Real-time updates** via Go WebSocket service
-- 💾 **Persistent last-known location** via Python REST API
-- 🔒 **Authorization** — you can only view locations of accepted friends
-- 📱 **Mobile-friendly** responsive UI
-
----
-
-## Screenshots
-
-| Sign In | Register |
+### 🆓 Free Tier
+| Feature | Details |
 |---|---|
-| ![Sign In](https://github.com/user-attachments/assets/dca4aa88-1214-43cd-9438-f3563ca7cc47) | ![Register](https://github.com/user-attachments/assets/3f8412ab-9c11-4c22-b464-26e074ced97d) |
+| Mutual friend tracking | Both parties must accept before location is shared |
+| Real-time location | Go WebSocket hub, updates every 30 s |
+| Tracking requests | Send / accept / reject via friend-request flow |
+| Remote Control | Screen share (WebRTC P2P), remote lock, stealth mode |
+| Battery-saver mode | Haversine movement threshold, Page Visibility API throttle |
+| SMS Lost-Phone | Twilio SMS with one-time deep link — no app install needed |
+| Offline queueing | Service Worker + IndexedDB + Background Sync |
+
+### ⭐ Premium Tier — $9.99/mo
+| Feature | Details |
+|---|---|
+| Location History | Last 100 GPS points stored; route playback animation on map |
+| Route Playback | Animated polyline + dot replaying your full path |
+| In-App Chat | Real-time messages with friends (also relayed via WebSocket) |
+| Social Account Links | WhatsApp & Facebook deep links for quick out-of-app chat |
+| Geofence Alerts | Draw radius zones; enter/exit fires browser notifications |
+| Nearby Phones Detection | Count devices online within N metres (useful when friend's phone is off) |
+| Priority GPS Updates | 10-second minimum interval |
+| Unlimited Friends | Free plan: 5 friends maximum |
+
+### 🛡 Admin Panel (`/admin.html`)
+| Feature | Details |
+|---|---|
+| Stats Dashboard | Total users · Live online count · Premium count · Revenue |
+| User Management | List, upgrade, downgrade any user |
+| Crypto Wallet | MetaMask ETH / ERC-20 sends to any address / chain |
+| Bank Payouts | Stripe Connect onboarding + biometric-gated bank transfers |
+| WebAuthn 2FA | Fingerprint / Face ID required before every financial transfer |
+| Transfer Audit Log | Immutable record of all admin transactions |
 
 ---
 
-## Getting Started
+## 💳 Payment Methods
 
-### Option 1 – Docker Compose (recommended)
+| Method | Flow |
+|---|---|
+| **Stripe** | Hosted Checkout session → webhook marks `is_premium` |
+| **Ethereum (MetaMask)** | `eth_sendTransaction` → backend verifies → premium granted |
+| **Smart Contract** | Deploy `ZTrackySubscription.sol`; users call `subscribe()` directly on-chain |
+
+---
+
+## 📱 SMS Commands (Twilio)
+
+Text these commands to your Twilio number:
+
+| Command | Effect |
+|---|---|
+| `TRACK +1234567890` | Activates lost mode for that phone number — sends silent deep-link SMS |
+| `LOCATE +1234567890` | Replies with last known GPS coordinates + Google Maps link |
+
+---
+
+## 🚀 Quick Start (Docker Compose)
 
 ```bash
-# Clone the repo
 git clone https://github.com/Zaidux/ZTracky.git
 cd ZTracky
 
-# (Optional) Set a secure secret
-export JWT_SECRET=your-very-secret-key
+# Copy and edit environment variables
+cp .env.example .env
+# Edit .env: set JWT_SECRET, ADMIN_KEY, TWILIO_SID, STRIPE_SECRET_KEY …
 
-# Build and start all services
 docker compose up --build
 ```
 
-Then open **http://localhost** in your browser.
-
-### Option 2 – Run services manually
-
-#### 1. Python REST API (port 8000)
-
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-API docs available at http://localhost:8000/docs
-
-#### 2. Go WebSocket service (port 8001)
-
-```bash
-cd location-service
-go run main.go
-```
-
-#### 3. Frontend
-
-Serve the `frontend/` directory with any static file server:
-
-```bash
-cd frontend
-python3 -m http.server 80
-# or: npx serve .
-```
-
-> **Important:** Both services must share the same `JWT_SECRET` environment variable (defaults to `ztracky-secret-key-change-in-production`).
+| Service | URL |
+|---|---|
+| Frontend | http://localhost:3001 |
+| API (FastAPI) | http://localhost:8000/docs |
+| WebSocket Hub | ws://localhost:8001/ws |
 
 ---
 
-## How It Works
+## 🔧 Environment Variables
 
-1. **Register** an account on either device.
-2. **Send a tracking request** to a friend by username (Requests tab).
-3. The friend opens the app, sees the **incoming request**, and **accepts** it.
-4. Both devices now appear on each other's **live map**.
-5. Location updates are sent:
-   - Over **WebSocket** (Go service) for real-time updates while both are online.
-   - Over **REST** (Python API) so the last-known location persists even when offline.
-
----
-
-## REST API Reference
-
-| Method | Endpoint | Description |
+| Variable | Default | Description |
 |---|---|---|
-| `POST` | `/api/register` | Create account |
-| `POST` | `/api/login` | Login (returns JWT) |
-| `GET` | `/api/me` | Get current user |
-| `POST` | `/api/requests/send?username=X` | Send tracking request |
-| `GET` | `/api/requests` | List all requests |
-| `POST` | `/api/requests/{id}/accept` | Accept a request |
-| `POST` | `/api/requests/{id}/reject` | Reject a request |
-| `GET` | `/api/friends` | List accepted friends |
-| `POST` | `/api/location` | Update my location |
-| `GET` | `/api/location/{user_id}` | Get a friend's location |
-| `GET` | `/api/friends/locations` | Get all friends' locations |
+| `JWT_SECRET` | `ztracky-secret-key-change-in-production` | Sign JWT tokens |
+| `ADMIN_KEY` | `ztracky-admin-key-change-me` | Admin API access key |
+| `DATABASE_URL` | `sqlite:///./ztracky.db` | SQLAlchemy database URL |
+| `GO_SERVICE_URL` | `http://localhost:8001` | Internal URL for Go hub |
+| `STRIPE_SECRET_KEY` | *(empty)* | Stripe secret key |
+| `STRIPE_WEBHOOK_SECRET` | *(empty)* | Stripe webhook signing secret |
+| `TWILIO_SID` | *(empty)* | Twilio account SID |
+| `TWILIO_TOKEN` | *(empty)* | Twilio auth token |
+| `TWILIO_FROM` | *(empty)* | Twilio sender phone number |
+| `APP_URL` | `http://localhost` | Public URL (used in SMS links) |
+| `RP_ID` | `localhost` | WebAuthn relying party ID (your domain) |
+| `PREMIUM_PRICE_CENTS` | `999` | Stripe subscription price in cents |
 
 ---
 
-## WebSocket Protocol (Go service)
-
-Connect to `ws://localhost:8001/ws?token=<JWT>&username=<name>`
-
-**Send** (client → server):
-```json
-{
-  "type": "location",
-  "latitude": 40.7128,
-  "longitude": -74.0060,
-  "accuracy": 15.0,
-  "friends": [2, 5, 8]
-}
-```
-The `friends` array contains the user IDs of accepted friends (obtained from `GET /api/friends`). The Go hub forwards the message only to those users if they are currently connected.
-
-**Receive** (server → client):
-```json
-{
-  "type": "location",
-  "user_id": 3,
-  "username": "alice",
-  "latitude": 40.7128,
-  "longitude": -74.0060,
-  "accuracy": 15.0
-}
-```
-
----
-
-## Running Tests
-
-### Python (26 tests)
+## 🧪 Running Tests
 
 ```bash
+# Python (37 tests)
 cd backend
-pip install -r requirements.txt pytest httpx
+pip install -r requirements-test.txt
 pytest test_api.py -v
-```
 
-### Go (7 tests)
-
-```bash
+# Go (14 tests)
 cd location-service
 go test ./... -v
 ```
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 ZTracky/
 ├── backend/                  # Python FastAPI REST API
-│   ├── main.py               # Routes & schemas
-│   ├── database.py           # SQLAlchemy models (User, TrackingRequest, Location)
-│   ├── auth.py               # JWT & password helpers
-│   ├── test_api.py           # 26 pytest integration tests
+│   ├── main.py               # All endpoints
+│   ├── database.py           # SQLAlchemy models
+│   ├── auth.py               # JWT helpers
 │   ├── requirements.txt
-│   └── Dockerfile
-├── location-service/         # Go real-time WebSocket hub
-│   ├── main.go               # Hub + WebSocket handler + JWT validation
-│   ├── main_test.go          # 7 Go unit/integration tests
-│   ├── go.mod
-│   └── Dockerfile
-├── frontend/                 # HTML/CSS/JavaScript SPA
-│   ├── index.html            # App shell
-│   ├── app.js                # All client logic (auth, map, WS, requests)
-│   ├── style.css             # Dark-mode responsive styles
-│   └── Dockerfile            # Served by nginx
-└── docker-compose.yml        # Orchestrates all three services
+│   └── test_api.py           # 37 integration tests
+├── location-service/         # Go WebSocket hub
+│   ├── main.go
+│   └── main_test.go          # 14 unit tests
+├── frontend/                 # Browser PWA
+│   ├── index.html            # Main app
+│   ├── app.js                # All frontend logic
+│   ├── style.css
+│   ├── sw.js                 # Service Worker (offline queuing)
+│   ├── admin.html            # Admin panel
+│   ├── admin.js
+│   └── admin.css
+├── contracts/
+│   └── ZTrackySubscription.sol   # Solidity smart contract
+├── docker-compose.yml
+└── DEPLOY.md                 # Deployment guide
 ```
+
+---
+
+## 🔒 Security Notes
+
+- **No card data** is ever stored — Stripe Checkout handles everything
+- **No private keys** — MetaMask signs all blockchain transactions client-side
+- **WebAuthn 2FA** gates every admin financial transfer
+- **Geofence privacy** — nearby anonymous devices return distance only, never coordinates
+- CORS is `allow_origins=["*"]` by default; **change to your domain in production**

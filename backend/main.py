@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from database import (
     get_db, create_tables, User, TrackingRequest, Location, LocationHistory,
     Payment, LostDevice, WebAuthnCredential, StripeConnectAccount,
-    AdminTransaction, RequestStatus,
+    AdminTransaction, RequestStatus, Geofence, GeofenceAlert, ChatMessage,
 )
 from auth import hash_password, verify_password, create_access_token, decode_token
 
@@ -179,6 +179,30 @@ class AdminTxOut(BaseModel):
     class Config: from_attributes = True
 
 
+class GeofenceIn(BaseModel):
+    label: str
+    latitude: float
+    longitude: float
+    radius_meters: float = 200.0
+
+class GeofenceOut(BaseModel):
+    id: int; label: str; latitude: float; longitude: float
+    radius_meters: float; is_active: bool; created_at: datetime
+    class Config: from_attributes = True
+
+class ChatMessageIn(BaseModel):
+    content: str
+
+class ChatMessageOut(BaseModel):
+    id: int; sender_id: int; receiver_id: int; content: str
+    sender_username: str; created_at: datetime
+    class Config: from_attributes = True
+
+class SocialLinksIn(BaseModel):
+    linked_whatsapp: Optional[str] = None
+    linked_facebook: Optional[str] = None
+
+
 # ── Auth ───────────────────────────────────────────────────────────────────
 @app.post("/api/register", status_code=201)
 def register(body: UserCreate, db: Session = Depends(get_db)):
@@ -291,6 +315,8 @@ def update_location(body: LocationIn, user: User = Depends(get_current_user), db
                 .order_by(LocationHistory.recorded_at.desc()).offset(100).all()
         for h in old: db.delete(h)
     db.commit(); db.refresh(loc)
+    # Check geofences asynchronously (in-process; fast enough for SQLite)
+    _check_geofences(user.id, body.latitude, body.longitude, db)
     return {"user_id": user.id, "username": user.username, "latitude": loc.latitude,
             "longitude": loc.longitude, "accuracy": loc.accuracy, "updated_at": loc.updated_at}
 
@@ -397,12 +423,20 @@ def deactivate_lost(current: User = Depends(get_current_user), db: Session = Dep
 @app.post("/api/sms/webhook")
 async def sms_webhook(request: Request, db: Session = Depends(get_db)):
     """
-    Twilio inbound SMS webhook.  Supports the command:
-      TRACK +1234567890   →  activates lost mode for the registered number
+    Twilio inbound SMS webhook.  Supports commands:
+
+      TRACK +1234567890   → activates lost mode for the registered number,
+                            sends deep-link SMS to that number
+      LOCATE +1234567890  → replies with the last known coordinates of that
+                            phone number's registered account
     """
     form = await request.form()
     body = (form.get("Body") or "").strip().upper()
+    from_number = (form.get("From") or "").strip()
     parts = body.split()
+
+    reply_msg = None
+
     if len(parts) == 2 and parts[0] == "TRACK":
         phone = parts[1]
         user = db.query(User).filter(User.phone_number == phone).first()
@@ -421,6 +455,33 @@ async def sms_webhook(request: Request, db: Session = Depends(get_db)):
                         body=f"ZTracky Safety: Tap to verify your device: {deep_link}")
                 except Exception:
                     pass
+            reply_msg = f"Lost mode activated. Deep link sent to {phone}."
+        else:
+            reply_msg = "No ZTracky account found for that number."
+
+    elif len(parts) == 2 and parts[0] == "LOCATE":
+        phone = parts[1]
+        user = db.query(User).filter(User.phone_number == phone).first()
+        if user:
+            loc = db.query(Location).filter(Location.user_id == user.id).first()
+            if loc:
+                reply_msg = (f"Last known location for {phone}: "
+                             f"lat={loc.latitude:.5f}, lon={loc.longitude:.5f} "
+                             f"(accuracy {loc.accuracy or '?'}m, "
+                             f"updated {loc.updated_at.strftime('%H:%M UTC')}). "
+                             f"Maps: https://maps.google.com/?q={loc.latitude},{loc.longitude}")
+            else:
+                reply_msg = f"No location data found for {phone}."
+        else:
+            reply_msg = "No ZTracky account found for that number."
+
+    # Send SMS reply if we have something to say and a valid from number
+    if reply_msg and from_number and _twilio and TWILIO_FROM:
+        try:
+            _twilio.messages.create(to=from_number, from_=TWILIO_FROM, body=reply_msg)
+        except Exception:
+            pass
+
     # Twilio expects a TwiML response
     return {"status": "ok"}
 
@@ -724,3 +785,207 @@ def admin_downgrade(user_id: int, _: None = Depends(require_admin), db: Session 
     if not user: raise HTTPException(404, "User not found")
     user.is_premium = False; db.commit()
     return {"user_id": user_id, "is_premium": False}
+
+# ── Haversine helper ───────────────────────────────────────────────────────
+import math as _math
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return distance in metres between two WGS-84 coordinates."""
+    R = 6_371_000.0
+    φ1, φ2 = _math.radians(lat1), _math.radians(lat2)
+    Δφ = _math.radians(lat2 - lat1)
+    Δλ = _math.radians(lon2 - lon1)
+    a = _math.sin(Δφ / 2) ** 2 + _math.cos(φ1) * _math.cos(φ2) * _math.sin(Δλ / 2) ** 2
+    return R * 2 * _math.atan2(_math.sqrt(a), _math.sqrt(1 - a))
+
+
+# ── Geofences ──────────────────────────────────────────────────────────────
+@app.post("/api/geofences", status_code=201)
+def create_geofence(body: GeofenceIn, user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    g = Geofence(user_id=user.id, label=body.label, latitude=body.latitude,
+                 longitude=body.longitude, radius_meters=body.radius_meters)
+    db.add(g); db.commit(); db.refresh(g)
+    return g
+
+
+@app.get("/api/geofences")
+def list_geofences(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(Geofence).filter(Geofence.user_id == user.id,
+                                      Geofence.is_active == True).all()
+
+
+@app.delete("/api/geofences/{gid}", status_code=204)
+def delete_geofence(gid: int, user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    g = db.query(Geofence).filter(Geofence.id == gid, Geofence.user_id == user.id).first()
+    if not g:
+        raise HTTPException(404, "Geofence not found")
+    g.is_active = False; db.commit()
+
+
+@app.get("/api/geofences/alerts")
+def list_geofence_alerts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    alerts = (db.query(GeofenceAlert)
+              .filter(GeofenceAlert.user_id == user.id)
+              .order_by(GeofenceAlert.created_at.desc())
+              .limit(50).all())
+    result = []
+    for a in alerts:
+        g = db.query(Geofence).filter(Geofence.id == a.geofence_id).first()
+        result.append({"id": a.id, "geofence_id": a.geofence_id,
+                       "label": g.label if g else "deleted",
+                       "event_type": a.event_type, "created_at": a.created_at})
+    return result
+
+
+def _check_geofences(user_id: int, lat: float, lon: float, db: Session):
+    """Called after every location update to create enter/exit alerts."""
+    fences = db.query(Geofence).filter(Geofence.user_id == user_id,
+                                        Geofence.is_active == True).all()
+    for fence in fences:
+        dist = _haversine_m(lat, lon, fence.latitude, fence.longitude)
+        inside = dist <= fence.radius_meters
+        # Check last alert for this fence to determine enter vs exit
+        last = (db.query(GeofenceAlert)
+                .filter(GeofenceAlert.user_id == user_id,
+                        GeofenceAlert.geofence_id == fence.id)
+                .order_by(GeofenceAlert.created_at.desc()).first())
+        last_inside = (last.event_type == "enter") if last else False
+        if inside and not last_inside:
+            db.add(GeofenceAlert(user_id=user_id, geofence_id=fence.id, event_type="enter"))
+        elif not inside and last_inside:
+            db.add(GeofenceAlert(user_id=user_id, geofence_id=fence.id, event_type="exit"))
+    db.commit()
+
+
+# ── Chat ────────────────────────────────────────────────────────────────────
+@app.get("/api/chat/{friend_id}")
+def get_chat(friend_id: int, current: User = Depends(get_current_user),
+             db: Session = Depends(get_db)):
+    """Fetch last 100 messages between the current user and a friend."""
+    if friend_id not in _friends_of(current.id, db):
+        raise HTTPException(403, "Not your friend")
+    msgs = (db.query(ChatMessage)
+            .filter(
+                ((ChatMessage.sender_id == current.id) & (ChatMessage.receiver_id == friend_id)) |
+                ((ChatMessage.sender_id == friend_id) & (ChatMessage.receiver_id == current.id))
+            )
+            .order_by(ChatMessage.created_at.asc())
+            .limit(100).all())
+    # Mark received messages as read
+    for m in msgs:
+        if m.receiver_id == current.id and m.read_at is None:
+            m.read_at = datetime.now(timezone.utc)
+    db.commit()
+    return [{"id": m.id, "sender_id": m.sender_id, "receiver_id": m.receiver_id,
+             "content": m.content,
+             "sender_username": m.sender.username,
+             "created_at": m.created_at} for m in msgs]
+
+
+@app.post("/api/chat/{friend_id}", status_code=201)
+def send_chat(friend_id: int, body: ChatMessageIn,
+              current: User = Depends(get_current_user),
+              db: Session = Depends(get_db)):
+    """Send a chat message to a friend (premium only)."""
+    if not current.is_premium:
+        raise HTTPException(402, "Chat is a premium feature")
+    if friend_id not in _friends_of(current.id, db):
+        raise HTTPException(403, "Not your friend")
+    if not body.content.strip():
+        raise HTTPException(400, "Message content is empty")
+    msg = ChatMessage(sender_id=current.id, receiver_id=friend_id,
+                      content=body.content.strip())
+    db.add(msg); db.commit(); db.refresh(msg)
+    return {"id": msg.id, "sender_id": msg.sender_id, "receiver_id": msg.receiver_id,
+            "content": msg.content, "sender_username": current.username,
+            "created_at": msg.created_at}
+
+
+@app.get("/api/chat/unread/count")
+def unread_count(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Total number of unread messages for the current user."""
+    count = (db.query(ChatMessage)
+             .filter(ChatMessage.receiver_id == current.id,
+                     ChatMessage.read_at.is_(None)).count())
+    return {"unread": count}
+
+
+# ── Social Account Links ───────────────────────────────────────────────────
+@app.patch("/api/me/social")
+def update_social(body: SocialLinksIn, user: User = Depends(get_current_user),
+                  db: Session = Depends(get_db)):
+    if body.linked_whatsapp is not None:
+        user.linked_whatsapp = body.linked_whatsapp.strip() or None
+    if body.linked_facebook is not None:
+        user.linked_facebook = body.linked_facebook.strip() or None
+    db.commit(); db.refresh(user)
+    return {"linked_whatsapp": user.linked_whatsapp,
+            "linked_facebook": user.linked_facebook}
+
+
+@app.get("/api/friends/social/{friend_id}")
+def friend_social(friend_id: int, current: User = Depends(get_current_user),
+                  db: Session = Depends(get_db)):
+    """Return a friend's linked social handles (only if they are your friend)."""
+    if friend_id not in _friends_of(current.id, db):
+        raise HTTPException(403, "Not your friend")
+    friend = db.query(User).filter(User.id == friend_id).first()
+    if not friend:
+        raise HTTPException(404, "User not found")
+    return {"linked_whatsapp": friend.linked_whatsapp,
+            "linked_facebook": friend.linked_facebook}
+
+
+# ── Nearby Phones ──────────────────────────────────────────────────────────
+@app.get("/api/nearby")
+def nearby_phones(radius: float = 500.0, current: User = Depends(get_current_user),
+                  db: Session = Depends(get_db)):
+    """
+    Return a count (and anonymised list) of devices that are:
+      • currently online (location updated within the last 5 minutes)
+      • within `radius` metres of the requesting user's last known location
+
+    The requesting user must have a location recorded.
+    Useful for estimating device presence when a friend's phone is offline.
+    """
+    my_loc = db.query(Location).filter(Location.user_id == current.id).first()
+    if not my_loc:
+        raise HTTPException(400, "Your location is not known yet")
+
+    # Fetch Go service for online user IDs
+    online_ids: set[int] = set()
+    try:
+        import requests as _req
+        r = _req.get(f"{GO_SERVICE_URL}/online-users", timeout=2)
+        if r.ok:
+            online_ids = set(r.json().get("user_ids", []))
+    except Exception:
+        pass
+
+    # 5-minute window (covers brief disconnects)
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    recent_locs = (db.query(Location)
+                   .filter(Location.user_id != current.id,
+                           Location.updated_at >= cutoff)
+                   .all())
+
+    friend_ids = set(_friends_of(current.id, db))
+    nearby = []
+    for loc in recent_locs:
+        dist = _haversine_m(my_loc.latitude, my_loc.longitude,
+                            loc.latitude, loc.longitude)
+        if dist <= radius:
+            is_online = loc.user_id in online_ids
+            is_friend = loc.user_id in friend_ids
+            entry = {"distance_meters": round(dist, 1), "is_friend": is_friend,
+                     "is_online": is_online}
+            if is_friend:
+                u = db.query(User).filter(User.id == loc.user_id).first()
+                entry["username"] = u.username if u else "unknown"
+            nearby.append(entry)
+
+    nearby.sort(key=lambda x: x["distance_meters"])
+    return {"count": len(nearby), "radius_meters": radius, "nearby": nearby}

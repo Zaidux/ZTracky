@@ -272,6 +272,28 @@ func TestStatsEndpoint(t *testing.T) {
 	}
 }
 
+func TestOnlineUsersEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(onlineUsersHandler))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/online-users", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if _, ok := body["user_ids"]; !ok {
+		t.Fatal("response missing user_ids field")
+	}
+}
+
 func TestHubBroadcastNotToSelf(t *testing.T) {
 	h := newHub()
 	ch := make(chan []byte, 2)

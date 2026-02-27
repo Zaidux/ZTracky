@@ -45,6 +45,7 @@
         <button class="tab-btn active" onclick="showTab('map')">🗺 Map</button>
         <button class="tab-btn" onclick="showTab('requests')">📨 Requests</button>
         <button class="tab-btn" onclick="showTab('friends')">👥 Friends</button>
+        <button class="tab-btn" onclick="showTab('chat')">💬 Chat</button>
         <button class="tab-btn" onclick="showTab('remote')">🛡 Remote</button>
         <button class="tab-btn" onclick="showTab('premium')">⭐ Premium</button>
         <button class="tab-btn" onclick="showTab('settings')">⚙️ Battery</button>
@@ -55,10 +56,28 @@
     <!-- Map Tab -->
     <div id="tab-map" class="tab-content active">
       <div id="map"></div>
+      <button class="geofence-toggle-btn" onclick="toggleGeofencePanel()" title="Manage geofence alerts">🔔</button>
       <div id="map-status" class="status-bar">
         <span id="location-status">📡 Getting your location…</span>
+        <span id="nearby-badge" class="nearby-badge" style="display:none" onclick="showTab('map')">📶 <span id="nearby-count">0</span> nearby</span>
         <span id="ws-status" class="ws-indicator">● Connecting</span>
       </div>
+    </div>
+
+    <!-- Geofence controls panel (overlay on map) - toggled from map tab -->
+    <div id="geofence-panel" class="geofence-panel" style="display:none">
+      <div class="section-title" style="margin:0 0 10px">🔔 Geofence Alerts</div>
+      <div class="input-row" style="margin-bottom:8px">
+        <input id="gf-label" type="text" placeholder="Label (e.g. Home)"/>
+        <input id="gf-radius" type="number" placeholder="Radius (m)" value="200"/>
+        <button onclick="addGeofenceAtCurrentLocation()">+ Add at My Location</button>
+      </div>
+      <div id="gf-msg" class="message" style="display:none"></div>
+      <div id="geofence-list" style="margin-top:8px"></div>
+      <hr style="border-color:var(--border);margin:10px 0"/>
+      <div class="section-title" style="margin:0 0 6px;font-size:.8rem">Recent Alerts</div>
+      <div id="geofence-alerts-list"><p class="empty">No alerts yet</p></div>
+      <button class="rc-close-btn" style="margin-top:10px" onclick="toggleGeofencePanel()">Close</button>
     </div>
 
     <!-- Requests Tab -->
@@ -84,6 +103,53 @@
       <div class="panel">
         <h2>Friends</h2>
         <div id="friends-list"><p class="empty">No friends yet. Send a tracking request!</p></div>
+      </div>
+    </div>
+
+    <!-- Chat Tab -->
+    <div id="tab-chat" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div class="section-title">💬 In-App Chat <span class="badge badge-accepted" id="chat-premium-badge" style="display:none">Premium</span></div>
+        <p class="setting-hint">Chat with accepted friends. Connect your WhatsApp or Facebook for quick deep-link access too.</p>
+
+        <!-- Friend picker -->
+        <div id="chat-friend-picker" style="margin-bottom:14px">
+          <select id="chat-friend-select" onchange="openChat()" style="width:100%;padding:9px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+            <option value="">— Select a friend to chat —</option>
+          </select>
+        </div>
+
+        <!-- Social deep-links for selected friend -->
+        <div id="social-links-bar" style="display:none;gap:10px;margin-bottom:14px" class="input-row">
+          <a id="social-wa-link" href="#" target="_blank" rel="noopener" class="rc-btn rc-btn-view" style="text-decoration:none">💬 WhatsApp</a>
+          <a id="social-fb-link" href="#" target="_blank" rel="noopener" class="rc-btn rc-btn-view" style="background:#1877f2;text-decoration:none">💙 Facebook</a>
+        </div>
+
+        <!-- In-app message area -->
+        <div id="chat-area" style="display:none">
+          <div id="chat-messages" class="chat-messages"></div>
+          <div class="chat-input-row">
+            <input id="chat-input" type="text" placeholder="Type a message…" onkeydown="if(event.key==='Enter')sendChatMessage()"/>
+            <button onclick="sendChatMessage()">Send</button>
+          </div>
+          <p class="setting-hint" id="chat-premium-note" style="display:none">⭐ Sending messages requires Premium. You can still read messages sent to you.</p>
+        </div>
+
+        <!-- My social accounts section -->
+        <div style="margin-top:28px">
+          <div class="section-title">🔗 My Social Accounts</div>
+          <p class="setting-hint">Add your handles so friends can reach you on WhatsApp or Facebook with one tap.</p>
+          <div class="input-row" style="margin-bottom:8px">
+            <input id="my-wa" type="tel" placeholder="WhatsApp number (+1234567890)"/>
+          </div>
+          <div class="input-row" style="margin-bottom:12px">
+            <input id="my-fb" type="text" placeholder="Facebook username or profile URL"/>
+          </div>
+          <button class="btn-save" onclick="saveSocialLinks()">Save Social Links</button>
+          <div id="social-save-msg" class="message" style="display:none"></div>
+        </div>
+
       </div>
     </div>
 
@@ -163,6 +229,9 @@
           <div class="perm-card"><div class="perm-info"><span class="perm-icon">⚡</span><div><strong>Priority Updates</strong><small>10-second minimum interval (free: 30 s minimum)</small></div></div><span class="prem-badge" id="feat-priority">🔒</span></div>
           <div class="perm-card"><div class="perm-info"><span class="perm-icon">👥</span><div><strong>Unlimited Friends</strong><small>Free plan: up to 5 friends</small></div></div><span class="prem-badge" id="feat-friends">🔒</span></div>
           <div class="perm-card"><div class="perm-info"><span class="perm-icon">📴</span><div><strong>Advanced Remote Control</strong><small>Screen view, stealth mode, remote lock</small></div></div><span class="prem-badge" id="feat-remote">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">💬</span><div><strong>In-App Chat</strong><small>Send and receive messages with friends</small></div></div><span class="prem-badge" id="feat-chat">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">🔔</span><div><strong>Geofence Alerts</strong><small>Get notified when entering or leaving an area</small></div></div><span class="prem-badge" id="feat-geo">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">📶</span><div><strong>Nearby Phones Detection</strong><small>See how many devices are online near you</small></div></div><span class="prem-badge" id="feat-nearby">🔒</span></div>
         </div>
 
         <!-- Lost-phone mode -->

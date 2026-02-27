@@ -29,6 +29,8 @@ class User(Base):
     is_premium = Column(Boolean, default=False)
     is_admin = Column(Boolean, default=False)
     stripe_customer_id = Column(String, nullable=True)
+    linked_whatsapp = Column(String, nullable=True)   # WhatsApp phone number e.g. +1234567890
+    linked_facebook = Column(String, nullable=True)   # Facebook username or profile URL
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     sent_requests = relationship("TrackingRequest", foreign_keys="TrackingRequest.sender_id", back_populates="sender")
@@ -145,6 +147,46 @@ class AdminTransaction(Base):
     network = Column(String, nullable=True)           # "ethereum" | "polygon" etc.
     status = Column(String, default="pending")        # "pending" | "confirmed" | "failed"
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Geofence(Base):
+    """A geographic fence (circle) that triggers alerts on enter/exit."""
+    __tablename__ = "geofences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    label = Column(String, nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    radius_meters = Column(Float, nullable=False, default=200.0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class GeofenceAlert(Base):
+    """Records when a user entered or exited a geofence."""
+    __tablename__ = "geofence_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    geofence_id = Column(Integer, ForeignKey("geofences.id"), nullable=False, index=True)
+    event_type = Column(String, nullable=False)       # "enter" | "exit"
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class ChatMessage(Base):
+    """Persisted in-app chat messages between friends."""
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    receiver_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    sender = relationship("User", foreign_keys=[sender_id])
+    receiver = relationship("User", foreign_keys=[receiver_id])
 
 
 def get_db():

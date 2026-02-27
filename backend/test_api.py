@@ -244,3 +244,137 @@ class TestLocation:
         client.post("/api/location", json={"latitude": 1.0, "longitude": 2.0}, headers=auth(ta))
         resp = client.get(f"/api/location/{alice_id}", headers=auth(ta))
         assert resp.status_code == 200
+
+
+# ── Geofence tests ────────────────────────────────────────────────────────
+class TestGeofences:
+    def _setup(self):
+        register("alice", "alice@test.com", "pass123")
+        tok = login("alice", "pass123")["access_token"]
+        return auth(tok)
+
+    def test_create_geofence(self):
+        h = self._setup()
+        r = client.post("/api/geofences", json={"label": "Home", "latitude": 51.5, "longitude": -0.1, "radius_meters": 100}, headers=h)
+        assert r.status_code == 201
+        assert r.json()["label"] == "Home"
+
+    def test_list_geofences(self):
+        h = self._setup()
+        client.post("/api/geofences", json={"label": "Work", "latitude": 40.7, "longitude": -74.0, "radius_meters": 200}, headers=h)
+        r = client.get("/api/geofences", headers=h)
+        assert r.status_code == 200
+        assert len(r.json()) >= 1
+
+    def test_delete_geofence(self):
+        h = self._setup()
+        gid = client.post("/api/geofences", json={"label": "Shop", "latitude": 48.8, "longitude": 2.3, "radius_meters": 150}, headers=h).json()["id"]
+        r = client.delete(f"/api/geofences/{gid}", headers=h)
+        assert r.status_code == 204
+
+    def test_delete_other_users_geofence_fails(self):
+        h1 = self._setup()
+        register("bob", "bob@test.com", "pass123")
+        h2 = auth(login("bob", "pass123")["access_token"])
+        gid = client.post("/api/geofences", json={"label": "Home", "latitude": 51.5, "longitude": -0.1}, headers=h1).json()["id"]
+        r = client.delete(f"/api/geofences/{gid}", headers=h2)
+        assert r.status_code == 404
+
+    def test_geofence_alert_on_location_update(self):
+        h = self._setup()
+        # Create geofence exactly at (10, 10) radius 100m
+        client.post("/api/geofences", json={"label": "Test Zone", "latitude": 10.0, "longitude": 10.0, "radius_meters": 100}, headers=h)
+        # Push location inside geofence
+        client.post("/api/location", json={"latitude": 10.0, "longitude": 10.0, "accuracy": 5}, headers=h)
+        alerts = client.get("/api/geofences/alerts", headers=h).json()
+        assert any(a["event_type"] == "enter" for a in alerts)
+
+
+# ── Chat tests ────────────────────────────────────────────────────────────
+class TestChat:
+    def _setup_friends(self):
+        register("alice", "alice@test.com", "pass123")
+        register("bob", "bob@test.com", "pass123")
+        ta = login("alice", "pass123")["access_token"]
+        tb = login("bob", "pass123")["access_token"]
+        ha, hb = auth(ta), auth(tb)
+        # Make them friends
+        req_id = client.post("/api/requests/send?username=bob", headers=ha).json()["id"]
+        client.post(f"/api/requests/{req_id}/accept", headers=hb)
+        # Upgrade alice to premium
+        ha_admin = {"X-Admin-Key": "ztracky-admin-key-change-me"}
+        alice_id = client.get("/api/me", headers=ha).json()["id"]
+        client.post(f"/api/admin/users/{alice_id}/upgrade", headers={**ha_admin})
+        # Re-login to get fresh token reflecting premium
+        ta = login("alice", "pass123")["access_token"]
+        ha = auth(ta)
+        return ha, hb, client.get("/api/me", headers=hb).json()["id"]
+
+    def test_send_and_receive_message(self):
+        ha, hb, bob_id = self._setup_friends()
+        alice_id = client.get("/api/me", headers=ha).json()["id"]
+        r = client.post(f"/api/chat/{bob_id}", json={"content": "Hello Bob!"}, headers=ha)
+        assert r.status_code == 201
+        assert r.json()["content"] == "Hello Bob!"
+        # Bob can read it
+        msgs = client.get(f"/api/chat/{alice_id}", headers=hb).json()
+        assert any(m["content"] == "Hello Bob!" for m in msgs)
+
+    def test_chat_requires_premium(self):
+        register("alice", "alice@test.com", "pass123")
+        register("bob", "bob@test.com", "pass123")
+        ha = auth(login("alice", "pass123")["access_token"])
+        hb = auth(login("bob", "pass123")["access_token"])
+        req_id = client.post("/api/requests/send?username=bob", headers=ha).json()["id"]
+        client.post(f"/api/requests/{req_id}/accept", headers=hb)
+        bob_id = client.get("/api/me", headers=hb).json()["id"]
+        r = client.post(f"/api/chat/{bob_id}", json={"content": "hi"}, headers=ha)
+        assert r.status_code == 402
+
+    def test_chat_non_friend_blocked(self):
+        register("alice", "alice@test.com", "pass123")
+        register("bob", "bob@test.com", "pass123")
+        ha = auth(login("alice", "pass123")["access_token"])
+        # upgrade
+        alice_id = client.get("/api/me", headers=ha).json()["id"]
+        client.post(f"/api/admin/users/{alice_id}/upgrade", headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        ta = login("alice", "pass123")["access_token"]; ha = auth(ta)
+        bob_id = client.get("/api/me", headers=auth(login("bob", "pass123")["access_token"])).json()["id"]
+        r = client.post(f"/api/chat/{bob_id}", json={"content": "hi"}, headers=ha)
+        assert r.status_code == 403
+
+    def test_unread_count(self):
+        ha, hb, bob_id = self._setup_friends()
+        client.post(f"/api/chat/{bob_id}", json={"content": "ping"}, headers=ha)
+        r = client.get("/api/chat/unread/count", headers=hb)
+        assert r.status_code == 200
+        assert r.json()["unread"] >= 1
+
+
+# ── Social links tests ────────────────────────────────────────────────────
+class TestSocialLinks:
+    def test_update_and_read_social_links(self):
+        register("alice", "alice@test.com", "pass123")
+        register("bob", "bob@test.com", "pass123")
+        ha = auth(login("alice", "pass123")["access_token"])
+        hb = auth(login("bob", "pass123")["access_token"])
+        # Update Alice's social links
+        r = client.patch("/api/me/social", json={"linked_whatsapp": "+15551234567", "linked_facebook": "alicefb"}, headers=ha)
+        assert r.status_code == 200
+        assert r.json()["linked_whatsapp"] == "+15551234567"
+        # Make friends
+        req_id = client.post("/api/requests/send?username=bob", headers=ha).json()["id"]
+        client.post(f"/api/requests/{req_id}/accept", headers=hb)
+        alice_id = client.get("/api/me", headers=ha).json()["id"]
+        r2 = client.get(f"/api/friends/social/{alice_id}", headers=hb)
+        assert r2.status_code == 200
+        assert r2.json()["linked_whatsapp"] == "+15551234567"
+
+    def test_social_link_blocked_for_non_friend(self):
+        register("alice", "alice@test.com", "pass123")
+        register("bob", "bob@test.com", "pass123")
+        ha = auth(login("alice", "pass123")["access_token"])
+        hb = auth(login("bob", "pass123")["access_token"])
+        alice_id = client.get("/api/me", headers=ha).json()["id"]
+        r = client.get(f"/api/friends/social/{alice_id}", headers=hb)
+        assert r.status_code == 403

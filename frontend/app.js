@@ -130,7 +130,7 @@ function showApp() {
 
 // ── Tabs (includes premium) ────────────────────────────────────────────────
 function showTab(name) {
-  const tabs = ['map', 'requests', 'friends', 'remote', 'premium', 'settings'];
+  const tabs = ['map', 'requests', 'friends', 'chat', 'remote', 'premium', 'settings'];
   tabs.forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? '' : 'none';
   });
@@ -140,6 +140,7 @@ function showTab(name) {
   if (name === 'map'     && map) setTimeout(() => map.invalidateSize(), 100);
   if (name === 'remote')         refreshControlPage();
   if (name === 'premium')        refreshPremiumUI();
+  if (name === 'chat')           initChatTab();
 }
 
 // ── Map ────────────────────────────────────────────────────────────────────
@@ -738,7 +739,7 @@ function refreshPremiumUI() {
   document.getElementById('free-status-banner').style.display    = isPrem ? 'none' : '';
   document.getElementById('payment-section').style.display       = isPrem ? 'none' : '';
   document.getElementById('history-section').style.display       = isPrem ? '' : 'none';
-  ['history', 'priority', 'friends', 'remote'].forEach(f => {
+  ['history', 'priority', 'friends', 'remote', 'chat', 'geo', 'nearby'].forEach(f => {
     const el = document.getElementById(`feat-${f}`);
     if (el) el.textContent = isPrem ? '✅' : '🔒';
   });
@@ -893,3 +894,288 @@ window.addEventListener('DOMContentLoaded', () => {
     // showApp is already called via the existing DOMContentLoaded handler
   }
 });
+
+// ── Geofence Management ────────────────────────────────────────────────────
+let geofenceCircles = [];
+let geofencePanelOpen = false;
+
+function toggleGeofencePanel() {
+  geofencePanelOpen = !geofencePanelOpen;
+  document.getElementById('geofence-panel').style.display = geofencePanelOpen ? '' : 'none';
+  if (geofencePanelOpen) { loadGeofences(); loadGeofenceAlerts(); }
+}
+
+async function loadGeofences() {
+  const data = await apiGet('/api/geofences');
+  if (data.error) return;
+  // Remove old circles
+  geofenceCircles.forEach(c => map && map.removeLayer(c));
+  geofenceCircles = [];
+  // Draw on map
+  data.forEach(g => {
+    if (!map) return;
+    const circle = L.circle([g.latitude, g.longitude], {
+      radius: g.radius_meters, color: '#f59e0b', fillColor: '#f59e0b44',
+      weight: 2, fillOpacity: 0.2,
+    }).bindTooltip(g.label).addTo(map);
+    geofenceCircles.push(circle);
+  });
+  // Render list
+  const el = document.getElementById('geofence-list');
+  if (!data.length) { el.innerHTML = '<p class="empty">No geofences set</p>'; return; }
+  el.innerHTML = data.map(g => `
+    <div class="perm-card" style="margin-bottom:6px">
+      <div class="perm-info"><span class="perm-icon">🔔</span>
+        <div><strong>${g.label}</strong><small>${g.radius_meters}m radius</small></div>
+      </div>
+      <button class="rc-btn rc-btn-lock" onclick="removeGeofence(${g.id})">Remove</button>
+    </div>`).join('');
+}
+
+async function addGeofenceAtCurrentLocation() {
+  const label  = document.getElementById('gf-label').value.trim();
+  const radius = parseFloat(document.getElementById('gf-radius').value) || 200;
+  const msgEl  = document.getElementById('gf-msg');
+  if (!label) { showMessage(msgEl, 'Please enter a label', 'error'); return; }
+  if (!myMarker) { showMessage(msgEl, 'Your location is not known yet', 'error'); return; }
+  const { lat, lng } = myMarker.getLatLng();
+  const res = await apiPost('/api/geofences', { label, latitude: lat, longitude: lng, radius_meters: radius });
+  if (res.error) { showMessage(msgEl, res.error, 'error'); return; }
+  showMessage(msgEl, `✅ Geofence "${label}" created!`, 'success');
+  document.getElementById('gf-label').value = '';
+  loadGeofences();
+  // Request notification permission for alerts
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+async function removeGeofence(id) {
+  await fetch(`${API_BASE}/api/geofences/${id}`, {
+    method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+  });
+  loadGeofences();
+}
+
+async function loadGeofenceAlerts() {
+  const data = await apiGet('/api/geofences/alerts');
+  const el   = document.getElementById('geofence-alerts-list');
+  if (!data || data.error || !data.length) { el.innerHTML = '<p class="empty">No alerts yet</p>'; return; }
+  el.innerHTML = data.slice(0, 8).map(a => `
+    <div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
+      <span>${a.event_type === 'enter' ? '🟢' : '🔴'}</span>
+      <span><strong>${a.label}</strong> — ${a.event_type}</span>
+      <small style="margin-left:auto;color:var(--text-muted)">${new Date(a.created_at).toLocaleTimeString()}</small>
+    </div>`).join('');
+}
+
+// Poll for geofence alerts and fire browser notifications
+let lastAlertId = 0;
+async function pollGeofenceAlerts() {
+  if (!token) return;
+  const data = await apiGet('/api/geofences/alerts');
+  if (!data || data.error) return;
+  const newAlerts = data.filter(a => a.id > lastAlertId);
+  if (newAlerts.length && lastAlertId > 0) {
+    newAlerts.forEach(a => {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification(`ZTracky Geofence: ${a.event_type.toUpperCase()}`, {
+          body: `You ${a.event_type === 'enter' ? 'entered' : 'left'} "${a.label}"`,
+          icon: '/favicon.ico',
+        });
+      }
+    });
+  }
+  if (data.length) lastAlertId = Math.max(...data.map(a => a.id));
+  // Refresh alert list if panel is open
+  if (geofencePanelOpen) loadGeofenceAlerts();
+}
+setInterval(pollGeofenceAlerts, 30_000);
+
+// ── Route Playback fix (called from Premium tab ▶ button) ─────────────────
+async function playbackRoute() {
+  const history = await apiGet('/api/location/history/me');
+  if (history.error) { alert(history.error); return; }
+  if (!history.length) { alert('No location history recorded yet. Location history is saved automatically as you move.'); return; }
+
+  const points = history.map(h => [h.latitude, h.longitude]).reverse();
+  // Switch to map tab first, then draw
+  showTab('map');
+  // Give Leaflet time to resize before fitting bounds
+  setTimeout(() => {
+    if (routePolyline) map.removeLayer(routePolyline);
+    routePolyline = L.polyline(points, { color: '#3b82f6', weight: 3, opacity: 0.8 }).addTo(map);
+    map.fitBounds(routePolyline.getBounds(), { padding: [20, 20] });
+    // Animate a marker along the route
+    let idx = 0;
+    const dot = L.circleMarker(points[0], { radius: 8, color: '#ef4444', fillOpacity: 1 }).addTo(map);
+    const timer = setInterval(() => {
+      if (idx >= points.length) { clearInterval(timer); dot.remove(); return; }
+      dot.setLatLng(points[idx++]);
+    }, 300);
+  }, 200);
+}
+
+// ── Nearby Phones ──────────────────────────────────────────────────────────
+let nearbyMarkers = [];
+
+async function pollNearbyPhones() {
+  if (!token) return;
+  const data = await apiGet('/api/nearby?radius=500');
+  if (data.error || data.count === undefined) return;
+
+  const badge = document.getElementById('nearby-badge');
+  const countEl = document.getElementById('nearby-count');
+  if (data.count > 0) {
+    badge.style.display = '';
+    countEl.textContent = data.count;
+  } else {
+    badge.style.display = 'none';
+  }
+
+  // Remove previous nearby markers from map
+  nearbyMarkers.forEach(m => map && map.removeLayer(m));
+  nearbyMarkers = [];
+}
+// Poll every 60 s — lightweight since it's just a DB query
+setInterval(pollNearbyPhones, 60_000);
+
+// ── Chat ───────────────────────────────────────────────────────────────────
+let chatFriendId  = null;
+let chatPollTimer = null;
+let friendsList   = [];
+
+async function initChatTab() {
+  // Populate friend picker
+  const friends = await apiGet('/api/friends');
+  if (friends.error) return;
+  friendsList = friends;
+  const sel = document.getElementById('chat-friend-select');
+  sel.innerHTML = '<option value="">— Select a friend to chat —</option>' +
+    friends.map(f => `<option value="${f.id}">${f.username}</option>`).join('');
+  // Pre-select if a chat was already open
+  if (chatFriendId) sel.value = chatFriendId;
+  openChat();
+  // Pre-fill social links
+  if (currentUser) {
+    if (currentUser.linked_whatsapp) document.getElementById('my-wa').value = currentUser.linked_whatsapp;
+    if (currentUser.linked_facebook) document.getElementById('my-fb').value = currentUser.linked_facebook;
+  }
+}
+
+async function openChat() {
+  const sel    = document.getElementById('chat-friend-select');
+  const fid    = parseInt(sel.value);
+  const area   = document.getElementById('chat-area');
+  const socBar = document.getElementById('social-links-bar');
+
+  if (!fid) { area.style.display = 'none'; socBar.style.display = 'none'; chatFriendId = null; return; }
+  chatFriendId = fid;
+  area.style.display = '';
+
+  // Load social links for this friend
+  const social = await apiGet(`/api/friends/social/${fid}`);
+  if (!social.error) {
+    const waLink = document.getElementById('social-wa-link');
+    const fbLink = document.getElementById('social-fb-link');
+    if (social.linked_whatsapp) {
+      const num = social.linked_whatsapp.replace(/\D/g, '');
+      waLink.href = `https://wa.me/${num}`;
+      waLink.style.display = '';
+    } else { waLink.style.display = 'none'; }
+    if (social.linked_facebook) {
+      const handle = social.linked_facebook.startsWith('http') ? social.linked_facebook : `https://m.me/${social.linked_facebook}`;
+      fbLink.href = handle;
+      fbLink.style.display = '';
+    } else { fbLink.style.display = 'none'; }
+    socBar.style.display = (social.linked_whatsapp || social.linked_facebook) ? 'flex' : 'none';
+  }
+
+  // Show premium note for non-premium users
+  document.getElementById('chat-premium-note').style.display = (currentUser && currentUser.is_premium) ? 'none' : '';
+
+  await loadMessages();
+  // Poll for new messages every 10 s
+  clearInterval(chatPollTimer);
+  chatPollTimer = setInterval(loadMessages, 10_000);
+}
+
+async function loadMessages() {
+  if (!chatFriendId) return;
+  const msgs = await apiGet(`/api/chat/${chatFriendId}`);
+  if (msgs.error) return;
+  const el = document.getElementById('chat-messages');
+  if (!msgs.length) { el.innerHTML = '<p class="empty">No messages yet. Say hello!</p>'; return; }
+  const myId = currentUser ? currentUser.id : 0;
+  el.innerHTML = msgs.map(m => `
+    <div class="chat-msg ${m.sender_id === myId ? 'chat-msg-me' : 'chat-msg-them'}">
+      <div class="chat-bubble">${escapeHtml(m.content)}</div>
+      <small class="chat-time">${new Date(m.created_at).toLocaleTimeString()}</small>
+    </div>`).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+async function sendChatMessage() {
+  const input   = document.getElementById('chat-input');
+  const content = input.value.trim();
+  if (!content || !chatFriendId) return;
+  if (!currentUser || !currentUser.is_premium) {
+    showMessage(document.getElementById('chat-premium-note'), '⭐ Chat requires Premium', 'error');
+    return;
+  }
+  const res = await apiPost(`/api/chat/${chatFriendId}`, { content });
+  if (res.error) { alert(res.error); return; }
+  input.value = '';
+  // Also push via WebSocket for zero-latency delivery to recipient
+  sendChatViaWS(chatFriendId, content);
+  await loadMessages();
+}
+
+// Also relay chat messages via WebSocket for real-time delivery (no polling lag)
+function sendChatViaWS(friendId, content) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type: 'remote_command', target_user_id: friendId,
+    command: 'chat', payload: content,
+  }));
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function saveSocialLinks() {
+  const wa  = document.getElementById('my-wa').value.trim();
+  const fb  = document.getElementById('my-fb').value.trim();
+  const res = await apiPatch('/api/me/social', { linked_whatsapp: wa || null, linked_facebook: fb || null });
+  showMessage(document.getElementById('social-save-msg'), res.error ? res.error : '✅ Social links saved!',
+              res.error ? 'error' : 'success');
+  if (!res.error && currentUser) {
+    currentUser.linked_whatsapp = wa || null;
+    currentUser.linked_facebook = fb || null;
+    localStorage.setItem('ztracky_user', JSON.stringify(currentUser));
+  }
+}
+
+// apiPatch helper
+async function apiPatch(path, body) {
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    return res.ok ? data : { error: data.detail || 'Error' };
+  } catch (e) { return { error: e.message }; }
+}
+
+// Unread chat badge on tab
+async function refreshChatUnread() {
+  if (!token) return;
+  const data = await apiGet('/api/chat/unread/count');
+  if (!data || data.error) return;
+  const btn = Array.from(document.querySelectorAll('.tab-btn')).find(b => b.textContent.startsWith('💬'));
+  if (btn) btn.textContent = data.unread > 0 ? `💬 Chat (${data.unread})` : '💬 Chat';
+}
+setInterval(refreshChatUnread, 15_000);
