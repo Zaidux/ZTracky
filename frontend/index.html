@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZTracky – Location Tracking</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Auth Section -->
+  <div id="auth-section" class="card">
+    <div class="app-header">
+      <span class="logo">📍</span>
+      <h1>ZTracky</h1>
+      <p class="tagline">Precise location sharing with trusted contacts</p>
+    </div>
+
+    <div id="login-form">
+      <h2>Sign In</h2>
+      <input id="login-username" type="text" placeholder="Username" />
+      <input id="login-password" type="password" placeholder="Password" />
+      <button onclick="login()">Sign In</button>
+      <p class="switch-link">Don't have an account? <a href="#" onclick="showRegister()">Register</a></p>
+    </div>
+
+    <div id="register-form" style="display:none">
+      <h2>Create Account</h2>
+      <input id="reg-username" type="text" placeholder="Username" />
+      <input id="reg-email" type="email" placeholder="Email" />
+      <input id="reg-password" type="password" placeholder="Password" />
+      <button onclick="register()">Create Account</button>
+      <p class="switch-link">Already have an account? <a href="#" onclick="showLogin()">Sign In</a></p>
+    </div>
+
+    <div id="auth-error" class="error" style="display:none"></div>
+  </div>
+
+  <!-- Main App Section -->
+  <div id="app-section" style="display:none">
+    <nav>
+      <span class="logo">📍 ZTracky</span>
+      <span id="nav-user"></span>
+      <div class="nav-buttons">
+        <button class="tab-btn active" onclick="showTab('map')">🗺 Map</button>
+        <button class="tab-btn" onclick="showTab('requests')">📨 Requests</button>
+        <button class="tab-btn" onclick="showTab('friends')">👥 Friends</button>
+        <button class="btn-danger" onclick="logout()">Sign Out</button>
+      </div>
+    </nav>
+
+    <!-- Map Tab -->
+    <div id="tab-map" class="tab-content active">
+      <div id="map"></div>
+      <div id="map-status" class="status-bar">
+        <span id="location-status">📡 Getting your location…</span>
+        <span id="ws-status" class="ws-indicator">● Connecting</span>
+      </div>
+    </div>
+
+    <!-- Requests Tab -->
+    <div id="tab-requests" class="tab-content" style="display:none">
+      <div class="panel">
+        <h2>Send Tracking Request</h2>
+        <div class="input-row">
+          <input id="req-username" type="text" placeholder="Enter username" />
+          <button onclick="sendRequest()">Send Request</button>
+        </div>
+        <div id="req-message" class="message" style="display:none"></div>
+
+        <h2>Incoming Requests</h2>
+        <div id="incoming-requests"><p class="empty">No pending requests</p></div>
+
+        <h2>Sent Requests</h2>
+        <div id="sent-requests"><p class="empty">No sent requests</p></div>
+      </div>
+    </div>
+
+    <!-- Friends Tab -->
+    <div id="tab-friends" class="tab-content" style="display:none">
+      <div class="panel">
+        <h2>Friends</h2>
+        <div id="friends-list"><p class="empty">No friends yet. Send a tracking request!</p></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

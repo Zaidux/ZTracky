@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./backend
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-ztracky-change-this-secret}
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend-data:/app
+    restart: unless-stopped
+
+  location-service:
+    build: ./location-service
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-ztracky-change-this-secret}
+      PORT: "8001"
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+      - location-service
+    restart: unless-stopped
+
+volumes:
+  backend-data:
