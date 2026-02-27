@@ -476,14 +476,25 @@ def submit_bug():
         default="bug"
     )
     title = Prompt.ask("Title")
-    console.print("[dim]Enter description (press Enter twice to finish):[/dim]")
+    console.print("[dim]Enter description (press Enter twice on empty lines to finish):[/dim]")
     
     lines = []
+    empty_line_count = 0
     while True:
         line = input()
-        if not line and lines and not lines[-1]:
-            break
-        lines.append(line)
+        if not line:
+            empty_line_count += 1
+            if empty_line_count >= 2:
+                # Two consecutive empty lines ends input
+                break
+            lines.append(line)
+        else:
+            empty_line_count = 0
+            lines.append(line)
+    
+    # Remove trailing empty lines
+    while lines and not lines[-1]:
+        lines.pop()
     description = "\n".join(lines).strip()
     
     if not description:

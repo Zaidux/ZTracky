@@ -1054,17 +1054,21 @@ def admin_reply_to_bug_report(report_id: int, body: BugReportReplyIn,
     if not body.content.strip():
         raise HTTPException(400, "Reply content is required")
 
-    # Find or create admin user for the reply
+    # Find an existing admin user, or use the first user as a fallback for admin replies
     admin_user = db.query(User).filter(User.is_admin == True).first()
     if not admin_user:
-        # Use user_id 0 or create a system user
-        admin_user_id = 0
-    else:
-        admin_user_id = admin_user.id
+        # If no admin user exists, get the first user (typically the system creator)
+        admin_user = db.query(User).first()
+    
+    # If still no user exists at all, raise an error
+    if not admin_user:
+        raise HTTPException(500, "No users exist in the system to attribute admin reply")
+    
+    admin_user_id = admin_user.id
 
     reply = BugReportReply(
         report_id=report_id,
-        user_id=admin_user_id if admin_user else report.user_id,
+        user_id=admin_user_id,
         is_admin_reply=True,
         content=body.content.strip(),
     )
