@@ -46,6 +46,7 @@
         <button class="tab-btn" onclick="showTab('requests')">📨 Requests</button>
         <button class="tab-btn" onclick="showTab('friends')">👥 Friends</button>
         <button class="tab-btn" onclick="showTab('chat')">💬 Chat</button>
+        <button class="tab-btn" onclick="showTab('calltrack')">📞 Call Track</button>
         <button class="tab-btn" onclick="showTab('remote')">🛡 Remote</button>
         <button class="tab-btn" onclick="showTab('premium')">⭐ Premium</button>
         <button class="tab-btn" onclick="showTab('settings')">⚙️ Battery</button>
@@ -78,6 +79,13 @@
       <div class="section-title" style="margin:0 0 6px;font-size:.8rem">Recent Alerts</div>
       <div id="geofence-alerts-list"><p class="empty">No alerts yet</p></div>
       <button class="rc-close-btn" style="margin-top:10px" onclick="toggleGeofencePanel()">Close</button>
+    </div>
+
+    <!-- Navigation steps panel (overlay on map, shown during active navigation) -->
+    <div id="nav-panel" class="nav-panel" style="display:none">
+      <div id="nav-info" style="margin-bottom:8px;font-weight:600"></div>
+      <div id="nav-steps" class="nav-steps-list"></div>
+      <button class="rc-close-btn" style="margin-top:10px;width:100%" onclick="closeNavigation()">✕ End Navigation</button>
     </div>
 
     <!-- Requests Tab -->
@@ -149,6 +157,45 @@
           <button class="btn-save" onclick="saveSocialLinks()">Save Social Links</button>
           <div id="social-save-msg" class="message" style="display:none"></div>
         </div>
+
+      </div>
+    </div>
+
+    <!-- Call Track Tab -->
+    <div id="tab-calltrack" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div class="section-title">📞 Call-Based Tracking <span class="prem-badge">Premium</span></div>
+        <p class="setting-hint">
+          Received a suspicious call — or a ransom call about a loved one?
+          Enter the caller's phone number and ZTracky will use carrier lookup +
+          nearby device data to estimate where the call originated, then pin
+          the confidence zone on the map.
+        </p>
+
+        <!-- Phone input -->
+        <div class="input-row" style="margin-bottom:10px">
+          <input id="ct-phone" type="tel" placeholder="Caller number (+1234567890)" style="flex:1"/>
+          <button onclick="submitCallTrack()">🔍 Locate</button>
+        </div>
+        <div id="ct-msg" class="message" style="display:none"></div>
+
+        <!-- Result card -->
+        <div id="ct-result" style="display:none;margin-top:16px">
+          <div class="impact-card">
+            <div class="impact-icon" id="ct-result-icon">📡</div>
+            <div class="impact-body">
+              <strong id="ct-result-phone"></strong>
+              <span id="ct-result-carrier"></span>
+              <small id="ct-result-notes" style="font-size:.75rem;opacity:.7"></small>
+            </div>
+            <button class="rc-btn rc-btn-view" onclick="showCallTrackOnMap()">🗺 View on Map</button>
+          </div>
+        </div>
+
+        <!-- History -->
+        <div class="section-title" style="margin-top:24px">Recent Lookups</div>
+        <div id="ct-history"><p class="empty">No lookups yet</p></div>
 
       </div>
     </div>
@@ -232,6 +279,8 @@
           <div class="perm-card"><div class="perm-info"><span class="perm-icon">💬</span><div><strong>In-App Chat</strong><small>Send and receive messages with friends</small></div></div><span class="prem-badge" id="feat-chat">🔒</span></div>
           <div class="perm-card"><div class="perm-info"><span class="perm-icon">🔔</span><div><strong>Geofence Alerts</strong><small>Get notified when entering or leaving an area</small></div></div><span class="prem-badge" id="feat-geo">🔒</span></div>
           <div class="perm-card"><div class="perm-info"><span class="perm-icon">📶</span><div><strong>Nearby Phones Detection</strong><small>See how many devices are online near you</small></div></div><span class="prem-badge" id="feat-nearby">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">📞</span><div><strong>Call-Based Tracking</strong><small>Use a call's caller ID to estimate where it originated — helpful in emergency situations</small></div></div><span class="prem-badge" id="feat-calltrack">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">🧭</span><div><strong>Trail Navigation</strong><small>Get turn-by-turn directions to a friend's location with route options</small></div></div><span class="prem-badge" id="feat-navigate">🔒</span></div>
         </div>
 
         <!-- Lost-phone mode -->

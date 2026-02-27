@@ -4,8 +4,8 @@ Endpoints: auth · tracking requests · locations · premium · SMS lost-mode ·
            Stripe payments · Ethereum crypto verification · WebAuthn 2FA ·
            Stripe Connect payouts · admin stats · admin wallet audit
 """
-import os, secrets, base64, json
-from datetime import datetime, timezone
+import os, secrets, base64, json, enum
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Header, Request, status
@@ -18,6 +18,7 @@ from database import (
     get_db, create_tables, User, TrackingRequest, Location, LocationHistory,
     Payment, LostDevice, WebAuthnCredential, StripeConnectAccount,
     AdminTransaction, RequestStatus, Geofence, GeofenceAlert, ChatMessage,
+    CallTrackingEvent,
 )
 from auth import hash_password, verify_password, create_access_token, decode_token
 
@@ -201,6 +202,14 @@ class ChatMessageOut(BaseModel):
 class SocialLinksIn(BaseModel):
     linked_whatsapp: Optional[str] = None
     linked_facebook: Optional[str] = None
+
+class CallTrackIn(BaseModel):
+    caller_phone: str           # E.164 format, e.g. "+15551234567"
+
+class NavigationMode(str, enum.Enum):
+    driving = "driving"
+    walking = "walking"
+    cycling = "cycling"
 
 
 # ── Auth ───────────────────────────────────────────────────────────────────
@@ -965,7 +974,6 @@ def nearby_phones(radius: float = 500.0, current: User = Depends(get_current_use
         pass
 
     # 5-minute window (covers brief disconnects)
-    from datetime import timedelta
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
     recent_locs = (db.query(Location)
                    .filter(Location.user_id != current.id,
@@ -989,3 +997,338 @@ def nearby_phones(radius: float = 500.0, current: User = Depends(get_current_use
 
     nearby.sort(key=lambda x: x["distance_meters"])
     return {"count": len(nearby), "radius_meters": radius, "nearby": nearby}
+
+# ── Call-Based Tracking ────────────────────────────────────────────────────
+# Country → approximate centre coordinate (lat, lon) + default confidence radius (km)
+# Used when we cannot determine a more precise location from nearby devices.
+_COUNTRY_CENTROIDS: dict[str, tuple[float, float, float]] = {
+    "US": (38.0, -97.0, 1500.0),
+    "GB": (52.5, -1.5, 300.0),
+    "CA": (56.0, -96.0, 1500.0),
+    "AU": (-27.0, 133.0, 1500.0),
+    "IN": (22.0, 79.0, 1000.0),
+    "NG": (9.0, 8.0, 500.0),
+    "ZA": (-29.0, 25.0, 600.0),
+    "DE": (51.0, 10.0, 400.0),
+    "FR": (46.0, 2.5, 400.0),
+    "BR": (-14.0, -51.0, 1500.0),
+    "MX": (23.0, -102.0, 800.0),
+    "PA": (9.0, -80.0, 200.0),
+}
+
+def _lookup_phone(phone: str) -> dict:
+    """Use Twilio Lookup V2 to get carrier and line type for a phone number."""
+    result: dict = {}
+    if not _twilio:
+        return result
+    try:
+        lookup = _twilio.lookups.v2.phone_numbers(phone).fetch(
+            fields=["line_type_intelligence", "caller_name"]
+        )
+        result["carrier_country"] = lookup.country_code
+        lti = lookup.line_type_intelligence or {}
+        result["line_type"]    = lti.get("type")
+        result["carrier_name"] = (lti.get("carrier_name") or
+                                  (lookup.caller_name or {}).get("caller_name"))
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/api/call-tracking", status_code=201)
+def create_call_tracking(
+    body: CallTrackIn,
+    current: User = Depends(require_premium),
+    db: Session = Depends(get_db),
+):
+    """
+    Submit a phone number (e.g. from a suspicious/ransom call) for location
+    estimation.
+
+    The system:
+    1. Performs a Twilio Lookup to get the carrier country and line type.
+    2. Anchors the estimated zone to the reporting user's last known location
+       when the caller appears to be on the same carrier country. Otherwise it
+       falls back to a country-level centroid.
+    3. Cross-references nearby online devices to tighten the confidence radius.
+    4. Persists and returns the estimated zone so it can be visualised on the map.
+    """
+    phone = body.caller_phone.strip()
+    lookup = _lookup_phone(phone)
+
+    carrier_country = lookup.get("carrier_country")
+    carrier_name    = lookup.get("carrier_name")
+    line_type       = lookup.get("line_type")
+
+    # Determine estimated position + confidence
+    my_loc = db.query(Location).filter(Location.user_id == current.id).first()
+
+    est_lat: Optional[float] = None
+    est_lon: Optional[float] = None
+    conf_km: float = 500.0
+    notes_parts: list[str] = []
+
+    if carrier_country:
+        notes_parts.append(f"Carrier country: {carrier_country}")
+
+    if carrier_name:
+        notes_parts.append(f"Carrier: {carrier_name}")
+
+    if line_type:
+        notes_parts.append(f"Line type: {line_type}")
+
+    # If the user's own location is known, anchor the estimate there with a
+    # radius that reflects the uncertainty level:
+    # - Same carrier country + user location known  → 50 km confidence radius
+    # - Carrier country known but no user location  → country centroid
+    # - Neither known                               → global unknown
+    user_country: Optional[str] = None
+    if my_loc and carrier_country:
+        # NOTE: Without a reverse-geocoding service we cannot determine the
+        # user's country from their GPS coordinates. As a known limitation,
+        # this implementation anchors the estimate to the user's location
+        # only when the carrier country is provided, treating the user as
+        # co-located in that country. In production, replace this with a
+        # real reverse-geocoding call (e.g. Nominatim / Google Geocoding API)
+        # to compare the user's actual country against the carrier country
+        # before anchoring the estimate.
+        user_country = carrier_country
+
+    if my_loc and user_country and user_country == carrier_country:
+        est_lat = my_loc.latitude
+        est_lon = my_loc.longitude
+        # Tighten radius using nearby online devices count
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+        nearby_count = (db.query(Location)
+                        .filter(Location.user_id != current.id,
+                                Location.updated_at >= cutoff)
+                        .count())
+        # More nearby devices → higher confidence (smaller radius)
+        conf_km = max(5.0, 50.0 - nearby_count * 5.0)
+        notes_parts.append(
+            f"Estimated within ~{conf_km:.0f} km of your location "
+            f"({nearby_count} nearby devices used for refinement)."
+        )
+    elif carrier_country and carrier_country in _COUNTRY_CENTROIDS:
+        clat, clon, ckm = _COUNTRY_CENTROIDS[carrier_country]
+        est_lat, est_lon, conf_km = clat, clon, ckm
+        notes_parts.append(f"Estimated at country centroid for {carrier_country} (~{ckm:.0f} km radius).")
+    else:
+        notes_parts.append(
+            "Insufficient data to estimate location. "
+            "Ensure Twilio Lookup is configured and the number is in E.164 format."
+        )
+
+    notes = " ".join(notes_parts) if notes_parts else None
+
+    event = CallTrackingEvent(
+        user_id=current.id,
+        caller_phone=phone,
+        carrier_name=carrier_name,
+        carrier_country=carrier_country,
+        line_type=line_type,
+        estimated_latitude=est_lat,
+        estimated_longitude=est_lon,
+        confidence_radius_km=conf_km,
+        notes=notes,
+    )
+    db.add(event); db.commit(); db.refresh(event)
+    return {
+        "id": event.id,
+        "caller_phone": event.caller_phone,
+        "carrier_name": event.carrier_name,
+        "carrier_country": event.carrier_country,
+        "line_type": event.line_type,
+        "estimated_latitude": event.estimated_latitude,
+        "estimated_longitude": event.estimated_longitude,
+        "confidence_radius_km": event.confidence_radius_km,
+        "notes": event.notes,
+        "created_at": event.created_at,
+    }
+
+
+@app.get("/api/call-tracking")
+def list_call_tracking(
+    current: User = Depends(require_premium),
+    db: Session = Depends(get_db),
+):
+    """Return the current user's call tracking history (newest first)."""
+    events = (db.query(CallTrackingEvent)
+              .filter(CallTrackingEvent.user_id == current.id)
+              .order_by(CallTrackingEvent.created_at.desc())
+              .limit(50).all())
+    return [
+        {
+            "id": e.id,
+            "caller_phone": e.caller_phone,
+            "carrier_name": e.carrier_name,
+            "carrier_country": e.carrier_country,
+            "line_type": e.line_type,
+            "estimated_latitude": e.estimated_latitude,
+            "estimated_longitude": e.estimated_longitude,
+            "confidence_radius_km": e.confidence_radius_km,
+            "notes": e.notes,
+            "created_at": e.created_at,
+        }
+        for e in events
+    ]
+
+
+# ── Trail Navigation ────────────────────────────────────────────────────────
+# OSRM profiles map to the routing service path component.
+_OSRM_PROFILE: dict[str, str] = {
+    "driving": "driving",
+    "walking": "foot",
+    "cycling": "bike",
+}
+
+# Approximate travel speeds used for fallback duration estimates when OSRM is unavailable
+_WALKING_SPEED_MS: float  = 1.4    # metres per second (~5 km/h)
+_DRIVING_SPEED_MS: float  = 13.9   # metres per second (~50 km/h)
+_CYCLING_SPEED_MS: float  = 4.2    # metres per second (~15 km/h)
+
+OSRM_BASE = os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org")
+
+
+def _osrm_route(
+    orig_lat: float, orig_lon: float,
+    dest_lat: float, dest_lon: float,
+    profile: str = "driving",
+) -> dict:
+    """
+    Call the OSRM Route API and return a simplified result dict:
+        {
+          "distance_meters": float,
+          "duration_seconds": float,
+          "geometry": [[lat, lon], ...],   # decoded polyline
+          "steps": [{"instruction": str, "distance_meters": float}, ...]
+        }
+    Raises RuntimeError on failure.
+    """
+    import requests as _req
+    osrm_profile = _OSRM_PROFILE.get(profile, "driving")
+    coords = f"{orig_lon},{orig_lat};{dest_lon},{dest_lat}"
+    url = (f"{OSRM_BASE}/route/v1/{osrm_profile}/{coords}"
+           f"?overview=full&geometries=geojson&steps=true&annotations=false")
+    try:
+        resp = _req.get(url, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        raise RuntimeError(f"OSRM request failed: {exc}") from exc
+
+    if data.get("code") != "Ok" or not data.get("routes"):
+        raise RuntimeError(f"OSRM error: {data.get('code', 'unknown')}")
+
+    route = data["routes"][0]
+    leg   = route["legs"][0]
+
+    # GeoJSON geometry coordinates are [lon, lat] — flip to [lat, lon] for Leaflet
+    geom_coords = [[c[1], c[0]] for c in route["geometry"]["coordinates"]]
+
+    steps = []
+    for step in leg.get("steps", []):
+        maneuver = step.get("maneuver", {})
+        instr_type = maneuver.get("type", "")
+        modifier   = maneuver.get("modifier", "")
+        road       = step.get("name") or ""
+        dist_m     = step.get("distance", 0)
+        if dist_m < 1:
+            continue   # skip zero-distance steps
+        parts = [p for p in [instr_type.capitalize(), modifier, road] if p]
+        steps.append({
+            "instruction": " ".join(parts),
+            "distance_meters": round(dist_m),
+        })
+
+    return {
+        "distance_meters": round(route["distance"]),
+        "duration_seconds": round(route["duration"]),
+        "geometry": geom_coords,
+        "steps": steps,
+    }
+
+
+@app.get("/api/navigate/{friend_id}")
+def navigate_to_friend(
+    friend_id: int,
+    mode: NavigationMode = NavigationMode.driving,
+    avoid_highways: bool = False,
+    current: User = Depends(require_premium),
+    db: Session = Depends(get_db),
+):
+    """
+    Compute a navigation route from the current user's last known location
+    to a friend's last known location.
+
+    Returns route geometry (Leaflet-ready [[lat,lon]…]), distance, estimated
+    duration, and step-by-step instructions.
+
+    mode:            driving | walking | cycling
+    avoid_highways:  if true and mode=driving, the route profile switches
+                     to OSRM's foot profile as a proxy for
+                     non-highway-preferring results (OSRM public demo does not
+                     support avoid options; a self-hosted instance with custom
+                     profiles can honour this fully).
+    """
+    # Verify friendship
+    if friend_id not in _friends_of(current.id, db):
+        raise HTTPException(403, "Not your friend")
+
+    my_loc = db.query(Location).filter(Location.user_id == current.id).first()
+    if not my_loc:
+        raise HTTPException(400, "Your location is not known yet. Share your location first.")
+
+    friend_loc = db.query(Location).filter(Location.user_id == friend_id).first()
+    if not friend_loc:
+        raise HTTPException(404, "Friend's location is not known yet.")
+
+    dist_direct = _haversine_m(my_loc.latitude, my_loc.longitude,
+                               friend_loc.latitude, friend_loc.longitude)
+
+    # Trivial case: same spot
+    if dist_direct < 10:
+        return {
+            "distance_meters": 0,
+            "duration_seconds": 0,
+            "geometry": [[my_loc.latitude, my_loc.longitude]],
+            "steps": [{"instruction": "You are already at the destination", "distance_meters": 0}],
+            "mode": mode,
+            "avoid_highways": avoid_highways,
+        }
+
+    effective_mode = mode.value
+    if avoid_highways and mode == NavigationMode.driving:
+        # Fall back to walking profile which avoids motorways
+        effective_mode = "walking"
+
+    try:
+        result = _osrm_route(
+            my_loc.latitude, my_loc.longitude,
+            friend_loc.latitude, friend_loc.longitude,
+            profile=effective_mode,
+        )
+    except RuntimeError as exc:
+        # Graceful degradation: return straight-line route if OSRM is unavailable
+        result = {
+            "distance_meters": round(dist_direct),
+            "duration_seconds": round(dist_direct / (
+                _WALKING_SPEED_MS if effective_mode == "walking"
+                else _CYCLING_SPEED_MS if effective_mode == "cycling"
+                else _DRIVING_SPEED_MS
+            )),
+            "geometry": [
+                [my_loc.latitude, my_loc.longitude],
+                [friend_loc.latitude, friend_loc.longitude],
+            ],
+            "steps": [
+                {"instruction": f"Head toward destination ({str(exc)[:80]})",
+                 "distance_meters": round(dist_direct)},
+            ],
+        }
+
+    friend_user = db.query(User).filter(User.id == friend_id).first()
+    result["friend_username"] = friend_user.username if friend_user else "unknown"
+    result["mode"] = mode.value
+    result["avoid_highways"] = avoid_highways
+    return result

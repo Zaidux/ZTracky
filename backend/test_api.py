@@ -378,3 +378,163 @@ class TestSocialLinks:
         alice_id = client.get("/api/me", headers=ha).json()["id"]
         r = client.get(f"/api/friends/social/{alice_id}", headers=hb)
         assert r.status_code == 403
+
+
+# ── Call-Based Tracking tests ─────────────────────────────────────────────
+class TestCallTracking:
+    """Call-tracking is a premium feature."""
+
+    def _premium_user(self):
+        register("alice", "alice@test.com", "pass123")
+        h = auth(login("alice", "pass123")["access_token"])
+        alice_id = client.get("/api/me", headers=h).json()["id"]
+        client.post(f"/api/admin/users/{alice_id}/upgrade",
+                    headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        h = auth(login("alice", "pass123")["access_token"])
+        return h
+
+    def test_requires_premium(self):
+        register("alice", "alice@test.com", "pass123")
+        h = auth(login("alice", "pass123")["access_token"])
+        r = client.post("/api/call-tracking", json={"caller_phone": "+15551234567"}, headers=h)
+        assert r.status_code == 402
+
+    def test_create_event_without_twilio(self):
+        """Without Twilio configured, we still persist a call-tracking event."""
+        h = self._premium_user()
+        r = client.post("/api/call-tracking", json={"caller_phone": "+15551234567"}, headers=h)
+        assert r.status_code == 201
+        data = r.json()
+        assert data["caller_phone"] == "+15551234567"
+        assert "id" in data
+        # notes should mention insufficient data when Twilio is absent
+        assert data["notes"] is not None
+
+    def test_create_event_with_user_location(self):
+        """With a known user location the estimate is anchored to it."""
+        h = self._premium_user()
+        # Give alice a location
+        client.post("/api/location", json={"latitude": 51.5, "longitude": -0.1, "accuracy": 10}, headers=h)
+        r = client.post("/api/call-tracking", json={"caller_phone": "+441234567890"}, headers=h)
+        assert r.status_code == 201
+        data = r.json()
+        assert data["caller_phone"] == "+441234567890"
+
+    def test_list_events(self):
+        h = self._premium_user()
+        client.post("/api/call-tracking", json={"caller_phone": "+15551234567"}, headers=h)
+        client.post("/api/call-tracking", json={"caller_phone": "+447911123456"}, headers=h)
+        r = client.get("/api/call-tracking", headers=h)
+        assert r.status_code == 200
+        assert len(r.json()) == 2
+
+    def test_list_events_requires_premium(self):
+        register("alice", "alice@test.com", "pass123")
+        h = auth(login("alice", "pass123")["access_token"])
+        r = client.get("/api/call-tracking", headers=h)
+        assert r.status_code == 402
+
+    def test_events_isolated_per_user(self):
+        """User A's events are not visible to user B."""
+        hA = self._premium_user()
+        register("bob", "bob@test.com", "pass123")
+        hB_free = auth(login("bob", "pass123")["access_token"])
+        # Upgrade bob too
+        bob_id = client.get("/api/me", headers=hB_free).json()["id"]
+        client.post(f"/api/admin/users/{bob_id}/upgrade",
+                    headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        hB = auth(login("bob", "pass123")["access_token"])
+        client.post("/api/call-tracking", json={"caller_phone": "+15551234567"}, headers=hA)
+        r = client.get("/api/call-tracking", headers=hB)
+        assert r.status_code == 200
+        assert len(r.json()) == 0   # Bob sees none of Alice's events
+
+
+# ── Trail Navigation tests ─────────────────────────────────────────────────
+class TestNavigation:
+    """Navigation is a premium feature requiring friendship + known locations."""
+
+    def _setup(self):
+        register("alice", "alice@test.com", "pass123")
+        register("bob", "bob@test.com", "pass123")
+        hA = auth(login("alice", "pass123")["access_token"])
+        hB = auth(login("bob", "pass123")["access_token"])
+        # Make friends
+        req_id = client.post("/api/requests/send?username=bob", headers=hA).json()["id"]
+        client.post(f"/api/requests/{req_id}/accept", headers=hB)
+        # Upgrade Alice
+        alice_id = client.get("/api/me", headers=hA).json()["id"]
+        client.post(f"/api/admin/users/{alice_id}/upgrade",
+                    headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        hA = auth(login("alice", "pass123")["access_token"])
+        bob_id = client.get("/api/me", headers=hB).json()["id"]
+        return hA, hB, bob_id
+
+    def test_requires_premium(self):
+        register("alice", "alice@test.com", "pass123")
+        register("bob", "bob@test.com", "pass123")
+        hA = auth(login("alice", "pass123")["access_token"])
+        hB = auth(login("bob", "pass123")["access_token"])
+        req_id = client.post("/api/requests/send?username=bob", headers=hA).json()["id"]
+        client.post(f"/api/requests/{req_id}/accept", headers=hB)
+        bob_id = client.get("/api/me", headers=hB).json()["id"]
+        r = client.get(f"/api/navigate/{bob_id}", headers=hA)
+        assert r.status_code == 402
+
+    def test_requires_friendship(self):
+        hA, hB, bob_id = self._setup()
+        register("carol", "carol@test.com", "pass123")
+        hC_free = auth(login("carol", "pass123")["access_token"])
+        carol_id = client.get("/api/me", headers=hC_free).json()["id"]
+        client.post(f"/api/admin/users/{carol_id}/upgrade",
+                    headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        hC = auth(login("carol", "pass123")["access_token"])
+        r = client.get(f"/api/navigate/{bob_id}", headers=hC)
+        assert r.status_code == 403
+
+    def test_requires_own_location(self):
+        hA, hB, bob_id = self._setup()
+        # Bob has a location but Alice does not
+        client.post("/api/location", json={"latitude": 51.5, "longitude": -0.1}, headers=hB)
+        r = client.get(f"/api/navigate/{bob_id}", headers=hA)
+        assert r.status_code == 400
+
+    def test_requires_friend_location(self):
+        hA, hB, bob_id = self._setup()
+        # Alice has a location but Bob does not
+        client.post("/api/location", json={"latitude": 51.5, "longitude": -0.1}, headers=hA)
+        r = client.get(f"/api/navigate/{bob_id}", headers=hA)
+        assert r.status_code == 404
+
+    def test_same_location_returns_trivial(self):
+        hA, hB, bob_id = self._setup()
+        # Same coordinates → trivial result, no OSRM call needed
+        client.post("/api/location", json={"latitude": 51.5, "longitude": -0.1}, headers=hA)
+        client.post("/api/location", json={"latitude": 51.5, "longitude": -0.1}, headers=hB)
+        r = client.get(f"/api/navigate/{bob_id}", headers=hA)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["distance_meters"] == 0
+
+    def test_different_locations_returns_route(self):
+        """OSRM may be unavailable in test env — graceful fallback is acceptable."""
+        hA, hB, bob_id = self._setup()
+        # London → Manchester (about 270 km straight-line)
+        client.post("/api/location", json={"latitude": 51.5, "longitude": -0.12}, headers=hA)
+        client.post("/api/location", json={"latitude": 53.5, "longitude": -2.24}, headers=hB)
+        r = client.get(f"/api/navigate/{bob_id}?mode=driving", headers=hA)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["distance_meters"] > 0
+        assert len(data["geometry"]) >= 2
+        assert len(data["steps"]) >= 1
+        assert data["mode"] == "driving"
+        assert "friend_username" in data
+
+    def test_avoid_highways_mode(self):
+        hA, hB, bob_id = self._setup()
+        client.post("/api/location", json={"latitude": 51.5, "longitude": -0.12}, headers=hA)
+        client.post("/api/location", json={"latitude": 53.5, "longitude": -2.24}, headers=hB)
+        r = client.get(f"/api/navigate/{bob_id}?mode=driving&avoid_highways=true", headers=hA)
+        assert r.status_code == 200
+        assert r.json()["avoid_highways"] is True

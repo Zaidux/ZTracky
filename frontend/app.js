@@ -130,17 +130,18 @@ function showApp() {
 
 // ── Tabs (includes premium) ────────────────────────────────────────────────
 function showTab(name) {
-  const tabs = ['map', 'requests', 'friends', 'chat', 'remote', 'premium', 'settings'];
+  const tabs = ['map', 'requests', 'friends', 'chat', 'calltrack', 'remote', 'premium', 'settings'];
   tabs.forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach((btn, i) => {
     btn.classList.toggle('active', tabs[i] === name);
   });
-  if (name === 'map'     && map) setTimeout(() => map.invalidateSize(), 100);
-  if (name === 'remote')         refreshControlPage();
-  if (name === 'premium')        refreshPremiumUI();
-  if (name === 'chat')           initChatTab();
+  if (name === 'map'       && map) setTimeout(() => map.invalidateSize(), 100);
+  if (name === 'remote')           refreshControlPage();
+  if (name === 'premium')          refreshPremiumUI();
+  if (name === 'chat')             initChatTab();
+  if (name === 'calltrack')        initCallTrackTab();
 }
 
 // ── Map ────────────────────────────────────────────────────────────────────
@@ -327,7 +328,10 @@ async function loadFriends() {
   el.innerHTML = friends.map(f => `
     <div class="friend-card">
       <div class="info"><strong>${f.username}</strong><small>${f.email}</small></div>
-      <button class="btn-locate" onclick="locateFriend(${f.id}, '${f.username}')">📍 Locate</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn-locate" onclick="locateFriend(${f.id}, '${f.username}')">📍 Locate</button>
+        <button class="btn-locate" style="background:var(--accent2,#8b5cf6)" onclick="navigateToFriend(${f.id}, '${f.username}')">🧭 Navigate</button>
+      </div>
     </div>`).join('');
 
   const locs = await apiGet('/api/friends/locations');
@@ -739,7 +743,7 @@ function refreshPremiumUI() {
   document.getElementById('free-status-banner').style.display    = isPrem ? 'none' : '';
   document.getElementById('payment-section').style.display       = isPrem ? 'none' : '';
   document.getElementById('history-section').style.display       = isPrem ? '' : 'none';
-  ['history', 'priority', 'friends', 'remote', 'chat', 'geo', 'nearby'].forEach(f => {
+  ['history', 'priority', 'friends', 'remote', 'chat', 'geo', 'nearby', 'calltrack', 'navigate'].forEach(f => {
     const el = document.getElementById(`feat-${f}`);
     if (el) el.textContent = isPrem ? '✅' : '🔒';
   });
@@ -1179,3 +1183,194 @@ async function refreshChatUnread() {
   if (btn) btn.textContent = data.unread > 0 ? `💬 Chat (${data.unread})` : '💬 Chat';
 }
 setInterval(refreshChatUnread, 15_000);
+
+// ── Call-Based Tracking ────────────────────────────────────────────────────
+let _lastCallTrackResult = null;
+let callTrackCircle = null;
+
+async function initCallTrackTab() {
+  await loadCallTrackHistory();
+}
+
+async function submitCallTrack() {
+  const phone = document.getElementById('ct-phone').value.trim();
+  const msgEl = document.getElementById('ct-msg');
+  if (!phone) { showMessage(msgEl, 'Please enter a phone number in international format (+1234567890)', 'error'); return; }
+
+  showMessage(msgEl, '🔍 Looking up…', 'success');
+
+  const res = await apiPost('/api/call-tracking', { caller_phone: phone });
+  if (res.error) {
+    showMessage(msgEl, res.error, 'error');
+    return;
+  }
+  msgEl.style.display = 'none';
+  _lastCallTrackResult = res;
+
+  // Populate result card
+  document.getElementById('ct-result').style.display = '';
+  document.getElementById('ct-result-phone').textContent = res.caller_phone;
+  const carrierParts = [res.carrier_name, res.carrier_country, res.line_type].filter(Boolean);
+  document.getElementById('ct-result-carrier').textContent = carrierParts.join(' · ') || 'Carrier unknown';
+  document.getElementById('ct-result-notes').textContent   = res.notes || '';
+
+  await loadCallTrackHistory();
+}
+
+function showCallTrackOnMap() {
+  const r = _lastCallTrackResult;
+  if (!r || r.estimated_latitude == null) {
+    alert('No location estimate available for this call. Ensure your location is shared and Twilio Lookup is configured.');
+    return;
+  }
+  showTab('map');
+  setTimeout(() => {
+    if (callTrackCircle) map.removeLayer(callTrackCircle);
+    const radiusM = (r.confidence_radius_km || 500) * 1000;
+    callTrackCircle = L.circle([r.estimated_latitude, r.estimated_longitude], {
+      radius: radiusM,
+      color: '#ef4444', fillColor: '#ef444433', weight: 2, fillOpacity: 0.25,
+    })
+    .bindPopup(
+      `<strong>📞 ${escapeHtml(r.caller_phone)}</strong><br>` +
+      `${escapeHtml(r.carrier_name || 'Unknown carrier')}<br>` +
+      `Confidence radius: ~${(r.confidence_radius_km || 0).toFixed(0)} km`
+    )
+    .addTo(map);
+    map.fitBounds(callTrackCircle.getBounds(), { padding: [30, 30] });
+    callTrackCircle.openPopup();
+  }, 200);
+}
+
+async function loadCallTrackHistory() {
+  const data = await apiGet('/api/call-tracking');
+  const el   = document.getElementById('ct-history');
+  if (!data || data.error) { el.innerHTML = '<p class="empty">No lookups yet</p>'; return; }
+  if (!data.length)        { el.innerHTML = '<p class="empty">No lookups yet</p>'; return; }
+  el.innerHTML = data.map(e => {
+    const carrier = [e.carrier_name, e.carrier_country, e.line_type].filter(Boolean).join(' · ') || 'unknown';
+    const hasLoc  = e.estimated_latitude != null;
+    return `
+      <div class="perm-card" style="margin-bottom:6px;cursor:default">
+        <div class="perm-info">
+          <span class="perm-icon">📞</span>
+          <div>
+            <strong>${escapeHtml(e.caller_phone)}</strong>
+            <small>${escapeHtml(carrier)}</small>
+            <small style="opacity:.6">${new Date(e.created_at).toLocaleString()}</small>
+          </div>
+        </div>
+        ${hasLoc ? `<button class="rc-btn rc-btn-view" onclick='_showHistoryEventOnMap(${JSON.stringify(e)})'>🗺</button>` : '<span style="color:var(--text-muted);font-size:.8rem">No location</span>'}
+      </div>`;
+  }).join('');
+}
+
+function _showHistoryEventOnMap(e) {
+  _lastCallTrackResult = e;
+  showCallTrackOnMap();
+}
+
+// ── Trail Navigation ────────────────────────────────────────────────────────
+let navPolyline  = null;
+let navDestMarker = null;
+
+async function navigateToFriend(friendId, friendName) {
+  const modeSelect = await _promptNavigationMode(friendName);
+  if (!modeSelect) return;
+  const { mode, avoidHighways } = modeSelect;
+
+  const res = await apiGet(
+    `/api/navigate/${friendId}?mode=${mode}&avoid_highways=${avoidHighways}`
+  );
+  if (res.error) { alert(`Navigation error: ${res.error}`); return; }
+
+  _renderNavigation(res, friendName);
+}
+
+async function _promptNavigationMode(friendName) {
+  // Simple prompt using a small inline modal is cleaner, but to keep it
+  // dependency-free we use the native prompt.
+  const choice = prompt(
+    `Navigate to ${friendName}.\n\nChoose mode:\n  1 = driving (default)\n  2 = walking\n  3 = cycling\n\nEnter 1, 2 or 3:`
+  );
+  if (choice === null) return null;
+  const modeMap = { '1': 'driving', '2': 'walking', '3': 'cycling' };
+  const mode = modeMap[choice] || 'driving';
+  const avoidHighways = (mode === 'driving') &&
+    confirm('Avoid highways / motorways?');
+  return { mode, avoidHighways };
+}
+
+function _renderNavigation(res, friendName) {
+  // Switch to map
+  showTab('map');
+  setTimeout(() => {
+    // Clear old nav layers
+    if (navPolyline)   { map.removeLayer(navPolyline);   navPolyline   = null; }
+    if (navDestMarker) { map.removeLayer(navDestMarker); navDestMarker = null; }
+
+    if (!res.geometry || res.geometry.length < 2) {
+      alert('No route geometry returned.'); return;
+    }
+
+    // Draw route polyline
+    navPolyline = L.polyline(res.geometry, {
+      color: '#8b5cf6', weight: 5, opacity: 0.85,
+    }).addTo(map);
+
+    // Destination marker
+    const dest = res.geometry[res.geometry.length - 1];
+    navDestMarker = L.marker(dest, {
+      icon: L.divIcon({ className: '', html: '<div style="font-size:26px">🎯</div>', iconSize: [26, 26], iconAnchor: [13, 26] }),
+    }).bindPopup(
+      `<strong>🎯 ${escapeHtml(res.friend_username || friendName)}</strong><br>` +
+      `${_fmtDistance(res.distance_meters)} · ${_fmtDuration(res.duration_seconds)}`
+    ).addTo(map);
+
+    map.fitBounds(navPolyline.getBounds(), { padding: [30, 30] });
+    navDestMarker.openPopup();
+
+    // Show steps in the calltrack tab nav panel (reuse the panel there)
+    _showNavPanel(res, friendName);
+  }, 200);
+}
+
+function _showNavPanel(res, friendName) {
+  // Populate and reveal the navigation overlay on the map tab
+  document.getElementById('nav-panel').style.display = '';
+  document.getElementById('nav-info').innerHTML =
+    `<strong>🧭 To ${escapeHtml(res.friend_username || friendName)}</strong> · ` +
+    `${_fmtDistance(res.distance_meters)} · ${_fmtDuration(res.duration_seconds)} · ${res.mode}` +
+    (res.avoid_highways ? ' (no highways)' : '');
+
+  const stepsEl = document.getElementById('nav-steps');
+  if (!res.steps || !res.steps.length) {
+    stepsEl.innerHTML = '<p class="empty">No step details available</p>';
+    return;
+  }
+  stepsEl.innerHTML = res.steps.map((s, i) => `
+    <div class="nav-step">
+      <span class="nav-step-num">${i + 1}</span>
+      <span class="nav-step-instr">${escapeHtml(s.instruction)}</span>
+      <span class="nav-step-dist">${_fmtDistance(s.distance_meters)}</span>
+    </div>`).join('');
+}
+
+function closeNavigation() {
+  if (navPolyline)   { map.removeLayer(navPolyline);   navPolyline   = null; }
+  if (navDestMarker) { map.removeLayer(navDestMarker); navDestMarker = null; }
+  document.getElementById('nav-panel').style.display = 'none';
+}
+
+function _fmtDistance(m) {
+  if (!m) return '0 m';
+  if (m < 1000) return `${m} m`;
+  return `${(m / 1000).toFixed(1)} km`;
+}
+
+function _fmtDuration(s) {
+  if (!s) return '0 min';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${m}min` : `${m} min`;
+}

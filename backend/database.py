@@ -189,6 +189,24 @@ class ChatMessage(Base):
     receiver = relationship("User", foreign_keys=[receiver_id])
 
 
+class CallTrackingEvent(Base):
+    """Records a call-based location tracking attempt (premium feature)."""
+    __tablename__ = "call_tracking_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    caller_phone = Column(String, nullable=False)       # Phone number submitted for tracking
+    carrier_name = Column(String, nullable=True)        # Carrier from Twilio Lookup
+    carrier_country = Column(String, nullable=True)     # ISO country code
+    line_type = Column(String, nullable=True)           # "mobile" | "landline" | "voip"
+    # Estimated zone (anchored to the reporting user's location when available)
+    estimated_latitude = Column(Float, nullable=True)
+    estimated_longitude = Column(Float, nullable=True)
+    confidence_radius_km = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)                 # Human-readable summary
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 def get_db():
     db = SessionLocal()
     try:

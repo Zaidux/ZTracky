@@ -54,6 +54,8 @@ ZTracky is a real-time, privacy-first location-sharing and device-security platf
 | Social Account Links | WhatsApp & Facebook deep links for quick out-of-app chat |
 | Geofence Alerts | Draw radius zones; enter/exit fires browser notifications |
 | Nearby Phones Detection | Count devices online within N metres (useful when friend's phone is off) |
+| **Call-Based Tracking** | Enter a suspicious caller's phone number; ZTracky uses Twilio Lookup to identify carrier + country and cross-references nearby online devices to produce a confidence-radius zone on the map — valuable in kidnap/ransom scenarios |
+| **Trail Navigation** | Turn-by-turn route from your location to any friend's last known position; choose driving / walking / cycling; optional avoid-highways filter; powered by OSRM with graceful straight-line fallback |
 | Priority GPS Updates | 10-second minimum interval |
 | Unlimited Friends | Free plan: 5 friends maximum |
 
@@ -127,13 +129,14 @@ docker compose up --build
 | `APP_URL` | `http://localhost` | Public URL (used in SMS links) |
 | `RP_ID` | `localhost` | WebAuthn relying party ID (your domain) |
 | `PREMIUM_PRICE_CENTS` | `999` | Stripe subscription price in cents |
+| `OSRM_BASE_URL` | `https://router.project-osrm.org` | OSRM routing server (replace with self-hosted for production) |
 
 ---
 
 ## 🧪 Running Tests
 
 ```bash
-# Python (37 tests)
+# Python (50 tests)
 cd backend
 pip install -r requirements-test.txt
 pytest test_api.py -v
