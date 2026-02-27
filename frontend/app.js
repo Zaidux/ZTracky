@@ -1,5 +1,7 @@
 // REFRESH_INTERVAL_MS is how often the frontend polls for updated friend/request lists.
 const REFRESH_INTERVAL_MS = 30_000;
+
+/* ──────────────────────────────────────────
    ZTracky – Frontend Application (JavaScript)
    Communicates with:
      • Python FastAPI backend  (REST)
@@ -14,6 +16,54 @@ const WS_BASE = window.location.hostname === 'localhost' || window.location.host
   ? 'ws://localhost:8001'
   : `ws://${window.location.hostname}:8001`;
 
+// ── Settings ───────────────────────────────────────────────────────────────
+const SETTINGS_KEY = 'ztracky_settings';
+
+// Index → value maps for the range sliders
+const INTERVAL_VALUES    = [10, 20, 30, 60, 120, 300, 600, 900]; // seconds
+const THRESHOLD_VALUES   = [0, 5, 10, 25, 50, 100];              // metres; 0 = always send
+const BG_THROTTLE_VALUES = [1, 2, 5, 10];                        // multiplier
+
+const DEFAULT_SETTINGS = {
+  intervalIdx:   2,        // 30 s
+  thresholdIdx:  2,        // 10 m
+  accuracyMode: 'balanced',
+  bgThrottleIdx: 2,        // 5×
+};
+
+function loadSettings() {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY)) }; }
+  catch (_) { return { ...DEFAULT_SETTINGS }; }
+}
+
+function persistSettings(s) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+}
+
+// ── Geolocation helpers ────────────────────────────────────────────────────
+/** Return watchPosition options for the given accuracy mode. */
+function geoOptions(mode) {
+  switch (mode) {
+    case 'high': return { enableHighAccuracy: true,  maximumAge: 0,     timeout: 15000 };
+    case 'low':  return { enableHighAccuracy: false, maximumAge: 30000, timeout: 30000 };
+    default:     return { enableHighAccuracy: false, maximumAge: 5000,  timeout: 10000 };
+  }
+}
+
+/**
+ * Haversine great-circle distance in metres.
+ * @param {number} lat1 @param {number} lng1 @param {number} lat2 @param {number} lng2
+ */
+function haversineMetres(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 let token = localStorage.getItem('ztracky_token');
 let currentUser = JSON.parse(localStorage.getItem('ztracky_user') || 'null');
@@ -23,6 +73,10 @@ let friendMarkers = {};   // userID → Leaflet marker
 let friendIDs = [];       // accepted friend user IDs (kept in sync)
 let ws = null;
 let watchId = null;
+
+// Smart-tracking state
+let lastSentTime = 0;
+let lastSentPos  = null;  // { lat, lng }
 
 // ── Initialise on page load ────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
@@ -112,18 +166,20 @@ function showApp() {
   loadFriends();
   startTracking();
   connectWS();
+  seedSettingsUI();
+  listenVisibilityChange();
 
   // Refresh friend list periodically so WS broadcasts reach new friends
   setInterval(() => { loadFriends(); loadRequests(); }, REFRESH_INTERVAL_MS);
 }
 
 function showTab(name) {
-  ['map', 'requests', 'friends'].forEach(t => {
+  ['map', 'requests', 'friends', 'settings'].forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? '' : 'none';
     document.getElementById(`tab-${t}`).classList.toggle('active', t === name);
   });
   document.querySelectorAll('.tab-btn').forEach((btn, i) => {
-    btn.classList.toggle('active', ['map', 'requests', 'friends'][i] === name);
+    btn.classList.toggle('active', ['map', 'requests', 'friends', 'settings'][i] === name);
   });
   if (name === 'map' && map) { setTimeout(() => map.invalidateSize(), 100); }
 }
@@ -163,18 +219,52 @@ function setFriendMarker(userID, username, lat, lng, accuracy) {
 }
 
 // ── Geolocation & location push ────────────────────────────────────────────
+/**
+ * Decide whether to actually send this position.
+ * Returns true only when enough time has elapsed AND the device has moved
+ * beyond the configured threshold (accounting for background throttle).
+ */
+function shouldSendLocation(lat, lng) {
+  const s = loadSettings();
+  const baseInterval  = INTERVAL_VALUES[s.intervalIdx] * 1000;
+  const bgMultiplier  = document.hidden ? BG_THROTTLE_VALUES[s.bgThrottleIdx] : 1;
+  const effectiveMs   = baseInterval * bgMultiplier;
+  const thresholdM    = THRESHOLD_VALUES[s.thresholdIdx];
+
+  const now = Date.now();
+  if (now - lastSentTime < effectiveMs) return false;
+
+  if (thresholdM > 0 && lastSentPos) {
+    const dist = haversineMetres(lastSentPos.lat, lastSentPos.lng, lat, lng);
+    if (dist < thresholdM) return false;
+  }
+  return true;
+}
+
 function startTracking() {
   if (!navigator.geolocation) {
     document.getElementById('location-status').textContent = '❌ Geolocation not supported';
     return;
   }
 
+  const s = loadSettings();
+
   watchId = navigator.geolocation.watchPosition(
     pos => {
       const { latitude, longitude, accuracy } = pos.coords;
-      document.getElementById('location-status').textContent =
-        `📡 ${latitude.toFixed(5)}, ${longitude.toFixed(5)} ±${accuracy ? accuracy.toFixed(0) + 'm' : '?'}`;
+
+      // Always update the local map marker — zero cost
       setMyMarker(latitude, longitude);
+
+      if (!shouldSendLocation(latitude, longitude)) return;
+
+      // Update state before sending so rapid callbacks don't double-send
+      lastSentTime = Date.now();
+      lastSentPos  = { lat: latitude, lng: longitude };
+
+      const bgSuffix = document.hidden ? ' (bg)' : '';
+      document.getElementById('location-status').textContent =
+        `📡 ${latitude.toFixed(5)}, ${longitude.toFixed(5)} ±${accuracy ? accuracy.toFixed(0) + 'm' : '?'}${bgSuffix}`;
 
       // Push to REST API for persistence
       apiPost('/api/location', { latitude, longitude, accuracy }).catch(() => {});
@@ -187,12 +277,33 @@ function startTracking() {
     err => {
       document.getElementById('location-status').textContent = `❌ ${err.message}`;
     },
-    { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+    geoOptions(s.accuracyMode)
   );
 }
 
 function stopTracking() {
   if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+}
+
+/** Restart watchPosition with updated geolocation options after settings change. */
+function restartTracking() {
+  stopTracking();
+  lastSentTime = 0;
+  lastSentPos  = null;
+  startTracking();
+}
+
+/**
+ * Page Visibility API: when the tab/screen comes back into focus,
+ * immediately try to send a location update so friends see us right away.
+ */
+function listenVisibilityChange() {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      // Force an immediate send on return to foreground
+      lastSentTime = 0;
+    }
+  });
 }
 
 // ── WebSocket (Go real-time service) ──────────────────────────────────────

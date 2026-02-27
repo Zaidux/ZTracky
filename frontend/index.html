@@ -45,6 +45,7 @@
         <button class="tab-btn active" onclick="showTab('map')">🗺 Map</button>
         <button class="tab-btn" onclick="showTab('requests')">📨 Requests</button>
         <button class="tab-btn" onclick="showTab('friends')">👥 Friends</button>
+        <button class="tab-btn" onclick="showTab('settings')">⚙️ Battery</button>
         <button class="btn-danger" onclick="logout()">Sign Out</button>
       </div>
     </nav>
@@ -81,6 +82,92 @@
       <div class="panel">
         <h2>Friends</h2>
         <div id="friends-list"><p class="empty">No friends yet. Send a tracking request!</p></div>
+      </div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div id="tab-settings" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div class="impact-card" id="impact-card">
+          <div class="impact-icon">🔋</div>
+          <div class="impact-body">
+            <strong id="impact-label">Balanced</strong>
+            <span id="impact-desc">Updates every 30 s · sends only if moved 10 m · low-power GPS</span>
+          </div>
+          <div class="impact-badge" id="impact-badge">●●○○○</div>
+        </div>
+
+        <!-- Update Interval -->
+        <div class="setting-group">
+          <div class="setting-header">
+            <label for="s-interval">Update Interval</label>
+            <span class="setting-value" id="s-interval-val">30 s</span>
+          </div>
+          <p class="setting-hint">How often your location is sent to friends. Longer = less battery &amp; data.</p>
+          <input type="range" id="s-interval" class="slider"
+                 min="0" max="7" step="1" value="2"
+                 oninput="onIntervalChange(this.value)" />
+          <div class="slider-labels">
+            <span>10 s</span><span>20 s</span><span>30 s</span><span>1 min</span>
+            <span>2 min</span><span>5 min</span><span>10 min</span><span>15 min</span>
+          </div>
+        </div>
+
+        <!-- Movement Threshold -->
+        <div class="setting-group">
+          <div class="setting-header">
+            <label for="s-threshold">Movement Threshold</label>
+            <span class="setting-value" id="s-threshold-val">10 m</span>
+          </div>
+          <p class="setting-hint">Skip sending if you haven't moved this far. Keeps you invisible when stationary.</p>
+          <input type="range" id="s-threshold" class="slider"
+                 min="0" max="5" step="1" value="2"
+                 oninput="onThresholdChange(this.value)" />
+          <div class="slider-labels">
+            <span>Always</span><span>5 m</span><span>10 m</span>
+            <span>25 m</span><span>50 m</span><span>100 m</span>
+          </div>
+        </div>
+
+        <!-- Accuracy Mode -->
+        <div class="setting-group">
+          <label class="setting-header">GPS Accuracy</label>
+          <p class="setting-hint">High accuracy uses GPS chip. Low Power uses cell towers/Wi-Fi — much kinder to the battery.</p>
+          <div class="radio-pills" id="s-accuracy">
+            <label class="pill">
+              <input type="radio" name="accuracy" value="high" onchange="onAccuracyChange('high')" />
+              <span>🛰 High</span>
+            </label>
+            <label class="pill">
+              <input type="radio" name="accuracy" value="balanced" checked onchange="onAccuracyChange('balanced')" />
+              <span>⚖️ Balanced</span>
+            </label>
+            <label class="pill">
+              <input type="radio" name="accuracy" value="low" onchange="onAccuracyChange('low')" />
+              <span>🌿 Low Power</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Background Throttle -->
+        <div class="setting-group">
+          <div class="setting-header">
+            <label for="s-bgthrottle">Background Throttle</label>
+            <span class="setting-value" id="s-bgthrottle-val">5×</span>
+          </div>
+          <p class="setting-hint">When the app is in the background (screen off / another tab), multiply the update interval by this factor. At 10× with a 30 s interval, updates only happen every 5 minutes.</p>
+          <input type="range" id="s-bgthrottle" class="slider"
+                 min="0" max="3" step="1" value="2"
+                 oninput="onBgThrottleChange(this.value)" />
+          <div class="slider-labels">
+            <span>Off (1×)</span><span>2×</span><span>5×</span><span>10×</span>
+          </div>
+        </div>
+
+        <button class="btn-save" onclick="saveSettings()">💾 Save &amp; Apply</button>
+        <div id="settings-saved" class="message success" style="display:none">Settings saved and applied!</div>
+
       </div>
     </div>
   </div>
