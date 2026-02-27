@@ -207,6 +207,82 @@ class CallTrackingEvent(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class BugReportType(str, enum.Enum):
+    bug = "bug"
+    feature = "feature"
+
+
+class BugReportStatus(str, enum.Enum):
+    open = "open"
+    in_progress = "in_progress"
+    resolved = "resolved"
+    closed = "closed"
+
+
+class BugReport(Base):
+    """User-submitted bug reports and feature requests."""
+    __tablename__ = "bug_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    report_type = Column(Enum(BugReportType), default=BugReportType.bug, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    status = Column(Enum(BugReportStatus), default=BugReportStatus.open, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", foreign_keys=[user_id])
+    replies = relationship("BugReportReply", back_populates="report", order_by="BugReportReply.created_at")
+
+
+class BugReportReply(Base):
+    """Replies on bug reports (chat-style conversation between user and admin)."""
+    __tablename__ = "bug_report_replies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(Integer, ForeignKey("bug_reports.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # Who sent this reply
+    is_admin_reply = Column(Boolean, default=False)  # True if admin replied
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    report = relationship("BugReport", back_populates="replies")
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class ApiKey(Base):
+    """User-generated API keys for CLI / third-party access.
+    Created after WebAuthn (fingerprint) verification.
+    Each key carries a set of permission scopes."""
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    key_hash = Column(String, nullable=False, unique=True)    # SHA-256 of the raw key
+    key_prefix = Column(String, nullable=False)               # First 8 chars for display
+    label = Column(String, nullable=False, default="CLI")     # Human-readable name
+    # Permissions stored as comma-separated scopes
+    scopes = Column(String, nullable=False, default="read")   # e.g. "read,write,location,chat,friends"
+    is_active = Column(Boolean, default=True)
+    last_used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
+# All available API key scopes
+API_KEY_SCOPES = [
+    "read",       # Read own profile, friends list, locations
+    "write",      # Update profile, settings
+    "location",   # Send/receive location updates
+    "friends",    # Send/accept/reject friend requests
+    "chat",       # Send/read chat messages
+    "tracking",   # Real-time tracking
+    "reports",    # Submit bug reports
+]
+
+
 def get_db():
     db = SessionLocal()
     try:

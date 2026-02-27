@@ -28,6 +28,7 @@
       <div class="nav-buttons">
         <button class="tab-btn active" onclick="adminTab('overview')">📊 Overview</button>
         <button class="tab-btn" onclick="adminTab('users')">👥 Users</button>
+        <button class="tab-btn" onclick="adminTab('reports')">🐛 Reports</button>
         <button class="tab-btn" onclick="adminTab('wallet')">💎 Wallet</button>
         <button class="tab-btn" onclick="adminTab('bank')">🏦 Bank</button>
         <button class="btn-danger" onclick="adminLogout()">Sign Out</button>
@@ -41,6 +42,11 @@
         <div class="stat-card online"><div class="stat-icon">🟢</div><div class="stat-val" id="s-online">–</div><div class="stat-label">Online Now</div></div>
         <div class="stat-card premium"><div class="stat-icon">⭐</div><div class="stat-val" id="s-premium">–</div><div class="stat-label">Premium</div></div>
         <div class="stat-card revenue"><div class="stat-icon">💰</div><div class="stat-val" id="s-revenue">–</div><div class="stat-label">Revenue (USD)</div></div>
+      </div>
+      <div class="stat-grid" style="margin-top:16px">
+        <div class="stat-card"><div class="stat-icon">🐛</div><div class="stat-val" id="s-bugs">–</div><div class="stat-label">Bug Reports</div></div>
+        <div class="stat-card"><div class="stat-icon">✨</div><div class="stat-val" id="s-features">–</div><div class="stat-label">Feature Requests</div></div>
+        <div class="stat-card"><div class="stat-icon">📬</div><div class="stat-val" id="s-open-reports">–</div><div class="stat-label">Open Reports</div></div>
       </div>
       <button class="btn-refresh" onclick="loadStats()">↺ Refresh Stats</button>
     </div>
@@ -56,6 +62,61 @@
           <thead><tr><th>ID</th><th>Username</th><th>Email</th><th>Phone</th><th>Premium</th><th>Joined</th><th>Action</th></tr></thead>
           <tbody id="users-tbody"></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ── Bug Reports ── -->
+    <div id="atab-reports" class="admin-panel" style="display:none">
+      <div class="admin-section-header">
+        <h2>Bug Reports & Feature Requests</h2>
+        <div style="display:flex;gap:10px;align-items:center">
+          <select id="reports-filter" onchange="loadBugReports()" style="padding:6px 12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+            <option value="">All</option>
+            <option value="open">Open</option>
+            <option value="in_progress">In Progress</option>
+            <option value="resolved">Resolved</option>
+            <option value="closed">Closed</option>
+          </select>
+          <button class="btn-refresh" onclick="loadBugReports()">↺ Refresh</button>
+        </div>
+      </div>
+      <div id="reports-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>ID</th><th>Type</th><th>Title</th><th>User</th><th>Status</th><th>Replies</th><th>Created</th><th>Action</th></tr></thead>
+          <tbody id="reports-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Bug Report Detail Modal -->
+    <div id="admin-report-modal" class="bug-report-modal" style="display:none">
+      <div class="bug-report-modal-content" style="max-width:700px">
+        <div class="bug-report-modal-header">
+          <span id="admin-modal-type" class="badge">Bug</span>
+          <h3 id="admin-modal-title">Report Title</h3>
+          <button class="rc-close-btn" onclick="closeAdminReportModal()">✕</button>
+        </div>
+        <div class="bug-report-modal-body">
+          <div class="bug-report-desc" id="admin-modal-desc"></div>
+          <div class="bug-report-meta">
+            <span>From: <strong id="admin-modal-user"></strong></span>
+            <span class="badge" id="admin-modal-status">open</span>
+            <small id="admin-modal-date"></small>
+          </div>
+          <div style="margin:12px 0;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="rc-btn rc-btn-view" onclick="updateReportStatus('in_progress')">⏳ In Progress</button>
+            <button class="rc-btn rc-btn-view" style="background:#22c55e" onclick="updateReportStatus('resolved')">✅ Resolved</button>
+            <button class="rc-btn rc-btn-lock" onclick="updateReportStatus('closed')">✕ Close</button>
+            <button class="rc-btn rc-btn-view" style="background:#8b5cf6" onclick="grantPremiumToReporter()">⭐ Grant Premium</button>
+          </div>
+          <hr style="border-color:var(--border);margin:12px 0"/>
+          <div style="font-weight:600;margin-bottom:8px">💬 Conversation</div>
+          <div id="admin-modal-replies" class="bug-report-replies"></div>
+          <div class="chat-input-row" style="margin-top:12px">
+            <input id="admin-reply-input" type="text" placeholder="Type admin reply…" onkeydown="if(event.key==='Enter')sendAdminReply()"/>
+            <button onclick="sendAdminReply()">Send</button>
+          </div>
+        </div>
       </div>
     </div>
 

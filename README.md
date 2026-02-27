@@ -62,12 +62,80 @@ ZTracky is a real-time, privacy-first location-sharing and device-security platf
 ### 🛡 Admin Panel (`/admin.html`)
 | Feature | Details |
 |---|---|
-| Stats Dashboard | Total users · Live online count · Premium count · Revenue |
+| Stats Dashboard | Total users · Live online count · Premium count · Revenue · Bug reports |
 | User Management | List, upgrade, downgrade any user |
+| **Free Premium Grants** | Grant free premium access to users (for beta testers, bug reporters, etc.) |
+| **Bug Report Review** | View and respond to user-submitted bug reports and feature requests |
 | Crypto Wallet | MetaMask ETH / ERC-20 sends to any address / chain |
 | Bank Payouts | Stripe Connect onboarding + biometric-gated bank transfers |
 | WebAuthn 2FA | Fingerprint / Face ID required before every financial transfer |
 | Transfer Audit Log | Immutable record of all admin transactions |
+
+### 🐛 Bug Reports & Feature Requests
+| Feature | Details |
+|---|---|
+| Submit Feedback | Users can submit bug reports or feature requests from the app |
+| Admin Review | Admin can view all reports, update status, and reply |
+| Chat-Style Replies | Conversation thread between user and admin |
+| Status Tracking | Reports can be marked as open, in_progress, resolved, or closed |
+
+---
+
+## 🖥️ CLI — Terminal Location Tracker
+
+ZTracky includes a powerful command-line interface for terminal enthusiasts. Intuitive, hacker-movie aesthetic.
+
+```bash
+# Install CLI
+cd cli && pip install -e .
+
+# Authenticate with API key (recommended — generate in Settings > API Keys after 2FA setup)
+ztracky login --api-key ztk_YOUR_API_KEY
+
+# Or use password (fallback)
+ztracky login
+
+# Commands
+ztracky status          # Show account status + auth method
+ztracky track           # Real-time tracking dashboard
+ztracky friends         # List friends
+ztracky locate alice    # Get friend's location
+ztracky chat alice      # Chat with friend (premium)
+ztracky requests        # Manage friend requests
+ztracky submit-bug      # Submit bug report
+ztracky premium         # Check premium status
+```
+
+---
+
+## 🔑 API Key Authentication
+
+API keys provide secure, scoped access for CLI and third-party integrations without exposing your password.
+
+### Setup Flow
+1. **Set up 2FA** — Go to Settings > API Keys and register your fingerprint / Face ID
+2. **Create API key** — Click "Generate API Key", verify with fingerprint, and choose permissions
+3. **Use in CLI** — `ztracky login --api-key ztk_YOUR_KEY`
+
+### Available Permission Scopes
+| Scope | Description |
+|---|---|
+| `read` | Read profile, friends list, locations (always on) |
+| `write` | Update profile and settings |
+| `location` | Send and receive location updates |
+| `friends` | Send, accept, reject friend requests |
+| `chat` | Send and read chat messages |
+| `tracking` | Real-time tracking features |
+| `reports` | Submit bug reports and feature requests |
+
+### API Key Authentication (HTTP)
+```bash
+# Direct API key header (any endpoint)
+curl -H "X-API-Key: ztk_YOUR_KEY" https://your-server/api/me
+
+# Exchange API key for JWT session token
+curl -X POST -H "X-API-Key: ztk_YOUR_KEY" https://your-server/api/login/api-key
+```
 
 ---
 
@@ -136,7 +204,7 @@ docker compose up --build
 ## 🧪 Running Tests
 
 ```bash
-# Python (50 tests)
+# Python (67 tests)
 cd backend
 pip install -r requirements-test.txt
 pytest test_api.py -v
@@ -157,7 +225,7 @@ ZTracky/
 │   ├── database.py           # SQLAlchemy models
 │   ├── auth.py               # JWT helpers
 │   ├── requirements.txt
-│   └── test_api.py           # 37 integration tests
+│   └── test_api.py           # 50 integration tests
 ├── location-service/         # Go WebSocket hub
 │   ├── main.go
 │   └── main_test.go          # 14 unit tests
@@ -169,6 +237,11 @@ ZTracky/
 │   ├── admin.html            # Admin panel
 │   ├── admin.js
 │   └── admin.css
+├── cli/                      # Terminal-based client
+│   ├── ztracky.py            # CLI application
+│   ├── setup.py              # Package setup
+│   ├── requirements.txt
+│   └── README.md             # CLI documentation
 ├── contracts/
 │   └── ZTrackySubscription.sol   # Solidity smart contract
 ├── docker-compose.yml
@@ -181,6 +254,8 @@ ZTracky/
 
 - **No card data** is ever stored — Stripe Checkout handles everything
 - **No private keys** — MetaMask signs all blockchain transactions client-side
-- **WebAuthn 2FA** gates every admin financial transfer
+- **WebAuthn 2FA** gates every admin financial transfer and API key creation
+- **API keys** are SHA-256 hashed before storage; raw keys shown only once at creation
+- **Scoped permissions** — API keys carry only the permissions you grant
 - **Geofence privacy** — nearby anonymous devices return distance only, never coordinates
 - CORS is `allow_origins=["*"]` by default; **change to your domain in production**

@@ -130,7 +130,7 @@ function showApp() {
 
 // ── Tabs (includes premium) ────────────────────────────────────────────────
 function showTab(name) {
-  const tabs = ['map', 'requests', 'friends', 'chat', 'calltrack', 'remote', 'premium', 'settings'];
+  const tabs = ['map', 'requests', 'friends', 'chat', 'calltrack', 'remote', 'premium', 'settings', 'feedback'];
   tabs.forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === name ? '' : 'none';
   });
@@ -142,6 +142,8 @@ function showTab(name) {
   if (name === 'premium')          refreshPremiumUI();
   if (name === 'chat')             initChatTab();
   if (name === 'calltrack')        initCallTrackTab();
+  if (name === 'feedback')         initFeedbackTab();
+  if (name === 'settings')         initSettingsApiKeys();
 }
 
 // ── Map ────────────────────────────────────────────────────────────────────
@@ -1373,4 +1375,290 @@ function _fmtDuration(s) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return h ? `${h}h ${m}min` : `${m} min`;
+}
+
+// ── Bug Reports / Feedback ─────────────────────────────────────────────────
+let currentReportId = null;
+
+async function submitFeedback() {
+  const reportType = document.getElementById('feedback-type').value;
+  const title = document.getElementById('feedback-title').value.trim();
+  const description = document.getElementById('feedback-description').value.trim();
+  const msgEl = document.getElementById('feedback-msg');
+
+  if (!title) { showMessage(msgEl, 'Please enter a title', 'error'); return; }
+  if (!description) { showMessage(msgEl, 'Please enter a description', 'error'); return; }
+
+  const res = await apiPost('/api/bug-reports', { report_type: reportType, title, description });
+  if (res.error) { showMessage(msgEl, res.error, 'error'); return; }
+
+  showMessage(msgEl, '✅ Feedback submitted! Thank you.', 'success');
+  document.getElementById('feedback-title').value = '';
+  document.getElementById('feedback-description').value = '';
+  loadMyBugReports();
+}
+
+async function loadMyBugReports() {
+  const data = await apiGet('/api/bug-reports');
+  const el = document.getElementById('my-bug-reports');
+  if (data.error) { el.innerHTML = `<p class="empty">Error: ${data.error}</p>`; return; }
+  if (!data.length) { el.innerHTML = '<p class="empty">No reports submitted yet</p>'; return; }
+
+  el.innerHTML = data.map(r => `
+    <div class="req-card" onclick="openBugReportModal(${r.id})" style="cursor:pointer">
+      <div class="info" style="flex:1">
+        <strong>${escapeHtml(r.title)}</strong>
+        <small style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="badge ${r.report_type === 'bug' ? 'badge-rejected' : 'badge-accepted'}">${r.report_type === 'bug' ? '🐛 Bug' : '✨ Feature'}</span>
+          <span class="badge badge-${r.status === 'resolved' ? 'accepted' : r.status === 'open' ? 'pending' : 'pending'}">${r.status}</span>
+          ${r.reply_count > 0 ? `<span>💬 ${r.reply_count}</span>` : ''}
+        </small>
+      </div>
+      <small>${new Date(r.created_at).toLocaleDateString()}</small>
+    </div>
+  `).join('');
+}
+
+async function openBugReportModal(reportId) {
+  currentReportId = reportId;
+  const res = await apiGet(`/api/bug-reports/${reportId}`);
+  if (res.error) { alert(res.error); return; }
+
+  document.getElementById('modal-report-type').textContent = res.report_type === 'bug' ? '🐛 Bug' : '✨ Feature';
+  document.getElementById('modal-report-type').className = `badge ${res.report_type === 'bug' ? 'badge-rejected' : 'badge-accepted'}`;
+  document.getElementById('modal-report-title').textContent = res.title;
+  document.getElementById('modal-report-desc').textContent = res.description;
+  document.getElementById('modal-report-status').textContent = res.status;
+  document.getElementById('modal-report-status').className = `badge badge-${res.status === 'resolved' ? 'accepted' : res.status === 'open' ? 'pending' : 'pending'}`;
+  document.getElementById('modal-report-date').textContent = new Date(res.created_at).toLocaleString();
+
+  const repliesEl = document.getElementById('modal-replies');
+  if (!res.replies || !res.replies.length) {
+    repliesEl.innerHTML = '<p class="empty">No replies yet. The admin will respond soon!</p>';
+  } else {
+    repliesEl.innerHTML = res.replies.map(reply => `
+      <div class="bug-reply ${reply.is_admin_reply ? 'admin-reply' : 'user-reply'}">
+        <div class="bug-reply-header">
+          <strong>${reply.is_admin_reply ? '🛡 Admin' : '👤 You'}</strong>
+          <small>${new Date(reply.created_at).toLocaleString()}</small>
+        </div>
+        <div class="bug-reply-content">${escapeHtml(reply.content)}</div>
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('modal-reply-input').value = '';
+  document.getElementById('bug-report-modal').style.display = '';
+}
+
+function closeBugReportModal() {
+  document.getElementById('bug-report-modal').style.display = 'none';
+  currentReportId = null;
+}
+
+async function sendBugReportReply() {
+  if (!currentReportId) return;
+  const content = document.getElementById('modal-reply-input').value.trim();
+  if (!content) return;
+
+  const res = await apiPost(`/api/bug-reports/${currentReportId}/reply`, { content });
+  if (res.error) { alert(res.error); return; }
+
+  document.getElementById('modal-reply-input').value = '';
+  openBugReportModal(currentReportId);  // Refresh
+}
+
+// Initialize feedback tab
+function initFeedbackTab() {
+  loadMyBugReports();
+}
+
+// ── API Key Management ─────────────────────────────────────────────────────
+
+async function checkTwoFAStatus() {
+  const res = await apiGet('/api/webauthn/has-credentials');
+  if (res.error) return;
+  const has2FA = res.has_credentials;
+  document.getElementById('twofa-icon').textContent = has2FA ? '✅' : '🔒';
+  document.getElementById('twofa-label').textContent = has2FA ? '2FA Active' : '2FA Not Set Up';
+  document.getElementById('twofa-desc').textContent = has2FA
+    ? `${res.count} credential(s) registered`
+    : 'Register your fingerprint to create API keys';
+  document.getElementById('btn-register-fingerprint').textContent = has2FA
+    ? '🖐 Add Another Fingerprint'
+    : '🖐 Register Fingerprint / Face ID';
+  document.getElementById('apikey-create-section').style.display = has2FA ? '' : 'none';
+  if (has2FA) loadApiKeys();
+}
+
+async function registerFingerprint() {
+  const msgEl = document.getElementById('twofa-msg');
+  try {
+    showMessage(msgEl, 'Starting fingerprint registration...', 'success');
+    // Get registration options from server
+    const options = await apiGet('/api/webauthn/register-options');
+    if (options.error) { showMessage(msgEl, options.error, 'error'); return; }
+
+    // Convert challenge and user.id from base64url to ArrayBuffer
+    options.challenge = _b64ToArrayBuffer(options.challenge);
+    options.user.id = _b64ToArrayBuffer(options.user.id);
+    if (options.excludeCredentials) {
+      options.excludeCredentials = options.excludeCredentials.map(c => ({
+        ...c, id: _b64ToArrayBuffer(c.id)
+      }));
+    }
+
+    // Prompt user for biometric
+    const credential = await navigator.credentials.create({ publicKey: options });
+
+    // Send response to server
+    const credJSON = {
+      id: credential.id,
+      rawId: _arrayBufferToB64(credential.rawId),
+      type: credential.type,
+      response: {
+        attestationObject: _arrayBufferToB64(credential.response.attestationObject),
+        clientDataJSON: _arrayBufferToB64(credential.response.clientDataJSON),
+      },
+    };
+    const result = await apiPost('/api/webauthn/register-verify', { credential: credJSON });
+    if (result.error) { showMessage(msgEl, result.error, 'error'); return; }
+
+    showMessage(msgEl, '✅ Fingerprint registered! You can now create API keys.', 'success');
+    checkTwoFAStatus();
+  } catch (e) {
+    showMessage(msgEl, 'Fingerprint registration failed: ' + (e.message || e), 'error');
+  }
+}
+
+async function createApiKey() {
+  const msgEl = document.getElementById('apikey-create-msg');
+  try {
+    showMessage(msgEl, 'Verifying fingerprint...', 'success');
+
+    // Step 1: Get WebAuthn auth options
+    const options = await apiGet('/api/webauthn/auth-options');
+    if (options.error) { showMessage(msgEl, options.error, 'error'); return; }
+
+    options.challenge = _b64ToArrayBuffer(options.challenge);
+    if (options.allowCredentials) {
+      options.allowCredentials = options.allowCredentials.map(c => ({
+        ...c, id: _b64ToArrayBuffer(c.id)
+      }));
+    }
+
+    // Step 2: Prompt biometric
+    const assertion = await navigator.credentials.get({ publicKey: options });
+
+    const assertJSON = {
+      id: assertion.id,
+      rawId: _arrayBufferToB64(assertion.rawId),
+      type: assertion.type,
+      response: {
+        authenticatorData: _arrayBufferToB64(assertion.response.authenticatorData),
+        clientDataJSON: _arrayBufferToB64(assertion.response.clientDataJSON),
+        signature: _arrayBufferToB64(assertion.response.signature),
+        userHandle: assertion.response.userHandle ? _arrayBufferToB64(assertion.response.userHandle) : null,
+      },
+    };
+
+    // Step 3: Verify and get auth token
+    const authResult = await apiPost('/api/webauthn/auth-verify', { credential: assertJSON });
+    if (authResult.error) { showMessage(msgEl, authResult.error, 'error'); return; }
+
+    // Step 4: Create API key with auth token
+    const label = document.getElementById('apikey-label').value.trim() || 'CLI';
+    const scopeEls = document.querySelectorAll('#apikey-scopes input[type=checkbox]:checked');
+    const scopes = Array.from(scopeEls).map(el => el.value);
+
+    const res = await fetch(`${API_BASE}/api/api-keys`, {
+      method: 'POST',
+      headers: {
+        ...apiAuthHeaders(),
+        'Content-Type': 'application/json',
+        'X-Auth-Token': authResult.auth_token,
+      },
+      body: JSON.stringify({ label, scopes }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showMessage(msgEl, data.detail || 'Failed to create key', 'error'); return; }
+
+    // Show the key (one-time)
+    document.getElementById('apikey-value').textContent = data.key;
+    document.getElementById('apikey-reveal').style.display = '';
+    showMessage(msgEl, '✅ API key created! Copy it now — it won\'t be shown again.', 'success');
+    document.getElementById('apikey-label').value = '';
+    loadApiKeys();
+  } catch (e) {
+    showMessage(msgEl, 'Failed: ' + (e.message || e), 'error');
+  }
+}
+
+function copyApiKey() {
+  const key = document.getElementById('apikey-value').textContent;
+  navigator.clipboard.writeText(key).then(() => {
+    alert('API key copied to clipboard!');
+  }).catch(() => {
+    // Fallback for browsers without clipboard API or missing HTTPS
+    prompt('Copy this API key manually:', key);
+  });
+}
+
+async function loadApiKeys() {
+  const res = await apiGet('/api/api-keys');
+  const el = document.getElementById('apikey-list');
+  if (res.error) { el.innerHTML = `<p class="empty">Error: ${escapeHtml(res.error)}</p>`; return; }
+  if (!res.length) { el.innerHTML = '<p class="empty">No API keys yet</p>'; return; }
+
+  el.innerHTML = res.map(k => `
+    <div class="req-card">
+      <div class="info" style="flex:1">
+        <strong>🔑 ${escapeHtml(k.label)}</strong>
+        <small style="display:flex;gap:8px;flex-wrap:wrap">
+          <code>${escapeHtml(k.key_prefix)}…</code>
+          <span class="badge badge-accepted">${escapeHtml(k.scopes)}</span>
+          ${k.last_used_at ? `<span>Last used: ${new Date(k.last_used_at).toLocaleDateString()}</span>` : '<span class="badge badge-pending">Never used</span>'}
+        </small>
+      </div>
+      <button class="btn-danger" style="padding:6px 12px;font-size:.8rem" onclick="revokeApiKey(${k.id})">Revoke</button>
+    </div>
+  `).join('');
+}
+
+async function revokeApiKey(keyId) {
+  if (!confirm('Revoke this API key? Any CLI sessions using it will lose access.')) return;
+  const res = await fetch(`${API_BASE}/api/api-keys/${keyId}`, {
+    method: 'DELETE',
+    headers: apiAuthHeaders(),
+  });
+  if (res.ok) loadApiKeys();
+  else alert('Failed to revoke key');
+}
+
+function apiAuthHeaders() {
+  return { 'Authorization': `Bearer ${token}` };
+}
+
+// WebAuthn helper: base64url → ArrayBuffer
+function _b64ToArrayBuffer(b64) {
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  const base64 = (b64 + pad).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr.buffer;
+}
+
+// WebAuthn helper: ArrayBuffer → base64url
+function _arrayBufferToB64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  bytes.forEach(b => binary += String.fromCharCode(b));
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Initialize settings tab with 2FA status check
+const _origSeedSettingsUI = typeof seedSettingsUI === 'function' ? seedSettingsUI : null;
+function initSettingsApiKeys() {
+  checkTwoFAStatus();
 }

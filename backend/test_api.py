@@ -538,3 +538,233 @@ class TestNavigation:
         r = client.get(f"/api/navigate/{bob_id}?mode=driving&avoid_highways=true", headers=hA)
         assert r.status_code == 200
         assert r.json()["avoid_highways"] is True
+
+
+# ── Bug Reports tests ──────────────────────────────────────────────────────
+
+class TestBugReports:
+    def test_create_bug_report(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.post("/api/bug-reports", json={
+            "report_type": "bug",
+            "title": "App crashes on login",
+            "description": "When I try to login, the app crashes."
+        }, headers=ha)
+        assert r.status_code == 201
+        assert r.json()["title"] == "App crashes on login"
+        assert r.json()["report_type"] == "bug"
+        assert r.json()["status"] == "open"
+
+    def test_create_feature_request(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.post("/api/bug-reports", json={
+            "report_type": "feature",
+            "title": "Dark mode",
+            "description": "Please add dark mode support."
+        }, headers=ha)
+        assert r.status_code == 201
+        assert r.json()["report_type"] == "feature"
+
+    def test_list_my_reports(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        client.post("/api/bug-reports", json={
+            "report_type": "bug", "title": "Bug 1", "description": "Desc 1"
+        }, headers=ha)
+        client.post("/api/bug-reports", json={
+            "report_type": "feature", "title": "Feature 1", "description": "Desc 2"
+        }, headers=ha)
+        r = client.get("/api/bug-reports", headers=ha)
+        assert r.status_code == 200
+        assert len(r.json()) == 2
+
+    def test_get_report_with_replies(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.post("/api/bug-reports", json={
+            "report_type": "bug", "title": "Test bug", "description": "Details here"
+        }, headers=ha)
+        report_id = r.json()["id"]
+        r = client.get(f"/api/bug-reports/{report_id}", headers=ha)
+        assert r.status_code == 200
+        assert r.json()["title"] == "Test bug"
+        assert "replies" in r.json()
+
+    def test_user_can_reply_to_own_report(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.post("/api/bug-reports", json={
+            "report_type": "bug", "title": "Test bug", "description": "Details"
+        }, headers=ha)
+        report_id = r.json()["id"]
+        r = client.post(f"/api/bug-reports/{report_id}/reply", json={
+            "content": "Any updates on this?"
+        }, headers=ha)
+        assert r.status_code == 201
+        assert r.json()["is_admin_reply"] is False
+
+    def test_admin_list_all_reports(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        client.post("/api/bug-reports", json={
+            "report_type": "bug", "title": "Bug 1", "description": "Desc 1"
+        }, headers=ha)
+        r = client.get("/api/admin/bug-reports", headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        assert r.status_code == 200
+        assert len(r.json()) >= 1
+
+    def test_admin_reply_to_report(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.post("/api/bug-reports", json={
+            "report_type": "bug", "title": "Bug 1", "description": "Desc 1"
+        }, headers=ha)
+        report_id = r.json()["id"]
+        r = client.post(f"/api/admin/bug-reports/{report_id}/reply", json={
+            "content": "Thanks for reporting! We're looking into it."
+        }, headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        assert r.status_code == 201
+        assert r.json()["is_admin_reply"] is True
+
+    def test_admin_update_status(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.post("/api/bug-reports", json={
+            "report_type": "bug", "title": "Bug 1", "description": "Desc 1"
+        }, headers=ha)
+        report_id = r.json()["id"]
+        r = client.patch(f"/api/admin/bug-reports/{report_id}/status?new_status=resolved",
+            headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "resolved"
+
+    def test_admin_grant_free_premium(self):
+        data = register("alice", "alice@test.com", "pass123")
+        user_id = data["user"]["id"]
+        r = client.post(f"/api/admin/users/{user_id}/grant-free-premium", json={
+            "reason": "Beta tester reward"
+        }, headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        assert r.status_code == 200
+        assert r.json()["is_premium"] is True
+
+    def test_bug_report_stats(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        client.post("/api/bug-reports", json={
+            "report_type": "bug", "title": "Bug 1", "description": "Desc 1"
+        }, headers=ha)
+        r = client.get("/api/admin/bug-reports/stats", headers={"X-Admin-Key": "ztracky-admin-key-change-me"})
+        assert r.status_code == 200
+        assert r.json()["total"] >= 1
+        assert "bugs" in r.json()
+        assert "features" in r.json()
+
+
+# ── API Key tests ───────────────────────────────────────────────────────────
+
+class TestApiKeys:
+    def test_check_has_credentials_none(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.get("/api/webauthn/has-credentials", headers=ha)
+        assert r.status_code == 200
+        assert r.json()["has_credentials"] is False
+        assert r.json()["count"] == 0
+
+    def test_list_scopes(self):
+        r = client.get("/api/api-keys/scopes")
+        assert r.status_code == 200
+        assert "read" in r.json()["scopes"]
+        assert "location" in r.json()["scopes"]
+
+    def test_create_api_key_requires_auth_token(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.post("/api/api-keys", json={
+            "label": "My CLI", "scopes": ["read", "location"]
+        }, headers={**ha, "X-Auth-Token": "invalid-token"})
+        assert r.status_code == 403
+
+    def test_list_api_keys_empty(self):
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        r = client.get("/api/api-keys", headers=ha)
+        assert r.status_code == 200
+        assert r.json() == []
+
+    def test_login_with_invalid_api_key(self):
+        r = client.post("/api/login/api-key", headers={"X-API-Key": "invalid-key"})
+        assert r.status_code == 401
+
+    def test_api_key_full_flow(self):
+        """Test creating an API key via simulated auth token and then using it."""
+        from main import _store_apikey_auth_token, _hash_api_key
+        from database import ApiKey, SessionLocal
+        import secrets as _secrets
+
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        user_id = data["user"]["id"]
+
+        # Simulate WebAuthn success by injecting an auth token
+        fake_token = _secrets.token_urlsafe(32)
+        _store_apikey_auth_token(fake_token, user_id)
+
+        # Create API key
+        r = client.post("/api/api-keys", json={
+            "label": "Test CLI Key", "scopes": ["read", "location", "friends"]
+        }, headers={**ha, "X-Auth-Token": fake_token})
+        assert r.status_code == 201
+        assert r.json()["key"].startswith("ztk_")
+        raw_key = r.json()["key"]
+        assert r.json()["label"] == "Test CLI Key"
+        assert "read" in r.json()["scopes"]
+
+        # List keys
+        r = client.get("/api/api-keys", headers=ha)
+        assert r.status_code == 200
+        assert len(r.json()) == 1
+        assert r.json()[0]["label"] == "Test CLI Key"
+
+        # Login with API key
+        r = client.post("/api/login/api-key", headers={"X-API-Key": raw_key})
+        assert r.status_code == 200
+        assert r.json()["user"]["username"] == "alice"
+        assert "read" in r.json()["key_scopes"]
+
+        # Use API key directly as auth (X-API-Key header)
+        r = client.get("/api/me", headers={"Authorization": "Bearer dummy", "X-API-Key": raw_key})
+        assert r.status_code == 200
+        assert r.json()["username"] == "alice"
+
+    def test_revoke_api_key(self):
+        from main import _store_apikey_auth_token
+        import secrets as _secrets
+
+        data = register("alice", "alice@test.com", "pass123")
+        ha = auth(data["access_token"])
+        user_id = data["user"]["id"]
+
+        # Create key
+        fake_token = _secrets.token_urlsafe(32)
+        _store_apikey_auth_token(fake_token, user_id)
+        r = client.post("/api/api-keys", json={
+            "label": "Revoke test", "scopes": ["read"]
+        }, headers={**ha, "X-Auth-Token": fake_token})
+        key_id = r.json()["id"]
+        raw_key = r.json()["key"]
+
+        # Revoke
+        r = client.delete(f"/api/api-keys/{key_id}", headers=ha)
+        assert r.status_code == 204
+
+        # Can no longer login with revoked key
+        r = client.post("/api/login/api-key", headers={"X-API-Key": raw_key})
+        assert r.status_code == 401
+
+        # List should be empty
+        r = client.get("/api/api-keys", headers=ha)
+        assert r.status_code == 200
+        assert len(r.json()) == 0

@@ -4,7 +4,7 @@ Endpoints: auth · tracking requests · locations · premium · SMS lost-mode ·
            Stripe payments · Ethereum crypto verification · WebAuthn 2FA ·
            Stripe Connect payouts · admin stats · admin wallet audit
 """
-import os, secrets, base64, json, enum
+import os, secrets, hashlib, hmac, base64, json, enum, time
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -18,7 +18,8 @@ from database import (
     get_db, create_tables, User, TrackingRequest, Location, LocationHistory,
     Payment, LostDevice, WebAuthnCredential, StripeConnectAccount,
     AdminTransaction, RequestStatus, Geofence, GeofenceAlert, ChatMessage,
-    CallTrackingEvent,
+    CallTrackingEvent, BugReport, BugReportReply, BugReportType, BugReportStatus,
+    ApiKey, API_KEY_SCOPES,
 )
 from auth import hash_password, verify_password, create_access_token, decode_token
 
@@ -87,7 +88,38 @@ def startup():
 
 
 # ── Dependencies ───────────────────────────────────────────────────────────
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+_API_KEY_HMAC_SECRET = os.environ.get("JWT_SECRET", "ztracky-secret-key-change-in-production")
+
+def _hash_api_key(raw_key: str) -> str:
+    """Hash an API key using HMAC-SHA256 with a server secret."""
+    return hmac.new(_API_KEY_HMAC_SECRET.encode(), raw_key.encode(), hashlib.sha256).hexdigest()
+
+
+def get_current_user(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    # Check for API key in X-API-Key header first
+    api_key_raw = request.headers.get("x-api-key", "")
+    if api_key_raw:
+        key_hash = _hash_api_key(api_key_raw)
+        api_key = db.query(ApiKey).filter(
+            ApiKey.key_hash == key_hash,
+            ApiKey.is_active == True,
+        ).first()
+        if not api_key:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+        api_key.last_used_at = datetime.now(timezone.utc)
+        db.commit()
+        user = db.query(User).filter(User.id == api_key.user_id).first()
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        # Attach scopes to the request state for downstream permission checks
+        request.state.api_key_scopes = set(api_key.scopes.split(","))
+        return user
+
+    # Fall back to JWT token
     payload = decode_token(token)
     if not payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
@@ -114,6 +146,29 @@ def require_transfer_token(x_transfer_token: str = Header(default=""), db: Sessi
     if uid is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or expired transfer token. Complete biometric auth first.")
     return uid
+
+# Short-lived API-key-creation tokens issued after WebAuthn success
+# Stores (user_id, expiry_timestamp) to prevent indefinite accumulation
+_apikey_auth_tokens: dict[str, tuple[int, float]] = {}  # token → (user_id, expiry_ts)
+
+def _store_apikey_auth_token(token: str, user_id: int, ttl_seconds: int = 120):
+    """Store an API-key-creation auth token with expiry."""
+    _apikey_auth_tokens[token] = (user_id, time.time() + ttl_seconds)
+    # Prune expired tokens
+    now = time.time()
+    expired = [k for k, (_, exp) in _apikey_auth_tokens.items() if exp < now]
+    for k in expired:
+        _apikey_auth_tokens.pop(k, None)
+
+def _pop_apikey_auth_token(token: str) -> Optional[int]:
+    """Pop and validate an API-key-creation auth token. Returns user_id or None."""
+    entry = _apikey_auth_tokens.pop(token, None)
+    if entry is None:
+        return None
+    user_id, expiry = entry
+    if time.time() > expiry:
+        return None  # Token expired
+    return user_id
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────
@@ -212,6 +267,56 @@ class NavigationMode(str, enum.Enum):
     cycling = "cycling"
 
 
+# ── Bug Report Schemas ─────────────────────────────────────────────────────
+class BugReportIn(BaseModel):
+    report_type: str = "bug"  # "bug" or "feature"
+    title: str
+    description: str
+
+class BugReportReplyIn(BaseModel):
+    content: str
+
+class BugReportOut(BaseModel):
+    id: int
+    user_id: int
+    username: str
+    report_type: str
+    title: str
+    description: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    class Config: from_attributes = True
+
+class BugReportReplyOut(BaseModel):
+    id: int
+    report_id: int
+    user_id: int
+    username: str
+    is_admin_reply: bool
+    content: str
+    created_at: datetime
+    class Config: from_attributes = True
+
+class AdminGrantPremiumIn(BaseModel):
+    reason: str = ""  # Optional reason for granting free premium
+
+# ── API Key Schemas ────────────────────────────────────────────────────────
+class CreateApiKeyIn(BaseModel):
+    label: str = "CLI"
+    scopes: List[str] = ["read"]  # List of permission scopes
+
+class ApiKeyOut(BaseModel):
+    id: int
+    key_prefix: str
+    label: str
+    scopes: str
+    is_active: bool
+    last_used_at: Optional[datetime] = None
+    created_at: datetime
+    class Config: from_attributes = True
+
+
 # ── Auth ───────────────────────────────────────────────────────────────────
 @app.post("/api/register", status_code=201)
 def register(body: UserCreate, db: Session = Depends(get_db)):
@@ -230,6 +335,31 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
     if not user or not verify_password(form.password, user.password_hash):
         raise HTTPException(400, "Invalid credentials")
     return {"access_token": create_access_token({"sub": str(user.id)}), "token_type": "bearer", "user": user}
+
+
+@app.post("/api/login/api-key")
+def login_with_api_key(x_api_key: str = Header(default=""), db: Session = Depends(get_db)):
+    """Authenticate using an API key. Returns a JWT token for session use."""
+    if not x_api_key:
+        raise HTTPException(400, "X-API-Key header required")
+    key_hash = _hash_api_key(x_api_key)
+    api_key = db.query(ApiKey).filter(
+        ApiKey.key_hash == key_hash,
+        ApiKey.is_active == True,
+    ).first()
+    if not api_key:
+        raise HTTPException(401, "Invalid API key")
+    api_key.last_used_at = datetime.now(timezone.utc)
+    db.commit()
+    user = db.query(User).filter(User.id == api_key.user_id).first()
+    if not user:
+        raise HTTPException(401, "User not found")
+    return {
+        "access_token": create_access_token({"sub": str(user.id)}),
+        "token_type": "bearer",
+        "user": user,
+        "key_scopes": api_key.scopes,
+    }
 
 
 @app.get("/api/me")
@@ -659,6 +789,209 @@ def webauthn_auth_verify(body: WebAuthnAuthVerifyIn, current: User = Depends(get
     return {"transfer_token": transfer_token, "expires_in": 60}
 
 
+# ── User WebAuthn 2FA (for API key creation) ───────────────────────────────
+@app.get("/api/webauthn/register-options")
+def user_webauthn_reg_options(current: User = Depends(get_current_user)):
+    """Get WebAuthn registration options for the current user (fingerprint/face ID setup)."""
+    if not _webauthn_ok:
+        raise HTTPException(503, "WebAuthn library not available")
+    opts = generate_registration_options(
+        rp_id=RP_ID, rp_name=RP_NAME,
+        user_id=str(current.id).encode(), user_name=current.username,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            user_verification=UserVerificationRequirement.REQUIRED),
+        supported_pub_key_algs=[COSEAlgorithmIdentifier.ECDSA_SHA_256,
+                                 COSEAlgorithmIdentifier.RSASSA_PKCS1_v1_5_SHA_256],
+    )
+    _reg_challenges[current.id] = opts.challenge
+    import webauthn.helpers.cbor as _cbor
+    return json.loads(opts.json())
+
+
+@app.post("/api/webauthn/register-verify")
+def user_webauthn_reg_verify(body: WebAuthnRegVerifyIn, current: User = Depends(get_current_user),
+                             db: Session = Depends(get_db)):
+    """Verify WebAuthn registration for the current user."""
+    if not _webauthn_ok:
+        raise HTTPException(503, "WebAuthn library not available")
+    challenge = _reg_challenges.pop(current.id, None)
+    if not challenge:
+        raise HTTPException(400, "No pending challenge")
+    try:
+        verification = verify_registration_response(
+            credential=body.credential,
+            expected_challenge=challenge,
+            expected_rp_id=RP_ID,
+            expected_origin=f"http://{RP_ID}",
+            require_user_verification=True,
+        )
+    except Exception as e:
+        raise HTTPException(400, f"WebAuthn verification failed: {e}")
+
+    cred_id = base64.urlsafe_b64encode(verification.credential_id).rstrip(b"=").decode()
+    pub_key = base64.urlsafe_b64encode(verification.credential_public_key).rstrip(b"=").decode()
+
+    existing = db.query(WebAuthnCredential).filter(WebAuthnCredential.credential_id == cred_id).first()
+    if not existing:
+        db.add(WebAuthnCredential(user_id=current.id, credential_id=cred_id,
+                                  public_key=pub_key, sign_count=verification.sign_count,
+                                  aaguid=str(verification.aaguid) if verification.aaguid else None))
+        db.commit()
+    return {"registered": True}
+
+
+@app.get("/api/webauthn/has-credentials")
+def user_has_webauthn(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Check if the current user has registered any WebAuthn credentials (2FA)."""
+    count = db.query(WebAuthnCredential).filter(WebAuthnCredential.user_id == current.id).count()
+    return {"has_credentials": count > 0, "count": count}
+
+
+@app.get("/api/webauthn/auth-options")
+def user_webauthn_auth_options(current: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Get WebAuthn authentication options for the current user (fingerprint verify)."""
+    if not _webauthn_ok:
+        raise HTTPException(503, "WebAuthn library not available")
+    creds = db.query(WebAuthnCredential).filter(WebAuthnCredential.user_id == current.id).all()
+    if not creds:
+        raise HTTPException(400, "No 2FA credentials registered. Set up fingerprint first.")
+    allow = [PublicKeyCredentialDescriptor(
+                 id=base64.urlsafe_b64decode(c.credential_id + "=="))
+             for c in creds]
+    opts = generate_authentication_options(
+        rp_id=RP_ID, allow_credentials=allow,
+        user_verification=UserVerificationRequirement.REQUIRED)
+    _auth_challenges[current.id] = opts.challenge
+    return json.loads(opts.json())
+
+
+@app.post("/api/webauthn/auth-verify")
+def user_webauthn_auth_verify(body: WebAuthnAuthVerifyIn, current: User = Depends(get_current_user),
+                              db: Session = Depends(get_db)):
+    """Verify WebAuthn authentication and issue a short-lived API-key-creation token."""
+    if not _webauthn_ok:
+        raise HTTPException(503, "WebAuthn library not available")
+    challenge = _auth_challenges.pop(current.id, None)
+    if not challenge:
+        raise HTTPException(400, "No pending challenge")
+
+    cred_id_raw = base64.urlsafe_b64decode(
+        body.credential.get("id", "") + "==")
+    cred_id_b64 = base64.urlsafe_b64encode(cred_id_raw).rstrip(b"=").decode()
+    stored = db.query(WebAuthnCredential).filter(
+        WebAuthnCredential.credential_id == cred_id_b64,
+        WebAuthnCredential.user_id == current.id).first()
+    if not stored:
+        raise HTTPException(400, "Credential not found")
+
+    pub_key_bytes = base64.urlsafe_b64decode(stored.public_key + "==")
+    try:
+        verification = verify_authentication_response(
+            credential=body.credential,
+            expected_challenge=challenge,
+            expected_rp_id=RP_ID,
+            expected_origin=f"http://{RP_ID}",
+            credential_public_key=pub_key_bytes,
+            credential_current_sign_count=stored.sign_count,
+            require_user_verification=True,
+        )
+    except Exception as e:
+        raise HTTPException(400, f"WebAuthn auth failed: {e}")
+
+    stored.sign_count = verification.new_sign_count
+    db.commit()
+
+    # Issue a short-lived token for API key creation (single-use, valid 120 s)
+    auth_token = secrets.token_urlsafe(32)
+    _store_apikey_auth_token(auth_token, current.id, ttl_seconds=120)
+    return {"auth_token": auth_token, "expires_in": 120}
+
+
+# ── API Key Management ─────────────────────────────────────────────────────
+@app.post("/api/api-keys", status_code=201)
+def create_api_key(body: CreateApiKeyIn,
+                   x_auth_token: str = Header(default=""),
+                   user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Create a new API key. Requires a valid auth token from WebAuthn verification."""
+    # Verify the auth token
+    token_user_id = _pop_apikey_auth_token(x_auth_token)
+    if token_user_id is None or token_user_id != user.id:
+        raise HTTPException(403, "Invalid or expired auth token. Complete fingerprint verification first.")
+
+    # Validate scopes
+    valid_scopes = []
+    for scope in body.scopes:
+        if scope in API_KEY_SCOPES:
+            valid_scopes.append(scope)
+    if not valid_scopes:
+        raise HTTPException(400, f"At least one valid scope required. Available: {API_KEY_SCOPES}")
+
+    # Generate the key
+    raw_key = f"ztk_{secrets.token_urlsafe(32)}"
+    key_hash = _hash_api_key(raw_key)
+    key_prefix = raw_key[:12]
+
+    api_key = ApiKey(
+        user_id=user.id,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        label=body.label[:50],
+        scopes=",".join(valid_scopes),
+    )
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+
+    # Return the full key ONLY at creation time
+    return {
+        "id": api_key.id,
+        "key": raw_key,     # Only shown once!
+        "key_prefix": key_prefix,
+        "label": api_key.label,
+        "scopes": api_key.scopes,
+        "created_at": api_key.created_at,
+    }
+
+
+@app.get("/api/api-keys")
+def list_api_keys(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List all API keys for the current user (prefix only, not full key)."""
+    keys = db.query(ApiKey).filter(
+        ApiKey.user_id == user.id,
+        ApiKey.is_active == True,
+    ).order_by(ApiKey.created_at.desc()).all()
+    return [{
+        "id": k.id,
+        "key_prefix": k.key_prefix,
+        "label": k.label,
+        "scopes": k.scopes,
+        "is_active": k.is_active,
+        "last_used_at": k.last_used_at,
+        "created_at": k.created_at,
+    } for k in keys]
+
+
+@app.delete("/api/api-keys/{key_id}", status_code=204)
+def revoke_api_key(key_id: int, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Revoke (deactivate) an API key."""
+    key = db.query(ApiKey).filter(
+        ApiKey.id == key_id,
+        ApiKey.user_id == user.id,
+    ).first()
+    if not key:
+        raise HTTPException(404, "API key not found")
+    key.is_active = False
+    db.commit()
+
+
+@app.get("/api/api-keys/scopes")
+def list_available_scopes():
+    """List all available API key permission scopes."""
+    return {"scopes": API_KEY_SCOPES}
+
+
 # ── Admin Wallet — Crypto Transfers ────────────────────────────────────────
 @app.post("/api/admin/wallet/send-crypto")
 def admin_send_crypto(body: SendCryptoIn, _: None = Depends(require_admin),
@@ -794,6 +1127,286 @@ def admin_downgrade(user_id: int, _: None = Depends(require_admin), db: Session 
     if not user: raise HTTPException(404, "User not found")
     user.is_premium = False; db.commit()
     return {"user_id": user_id, "is_premium": False}
+
+
+@app.post("/api/admin/users/{user_id}/grant-free-premium")
+def admin_grant_free_premium(user_id: int, body: AdminGrantPremiumIn = None,
+                              _: None = Depends(require_admin), db: Session = Depends(get_db)):
+    """Grant free premium access to a user (no payment required)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user: raise HTTPException(404, "User not found")
+    user.is_premium = True
+    db.commit()
+    return {"user_id": user_id, "is_premium": True, "reason": body.reason if body else ""}
+
+
+# ── Bug Reports (User Submission) ──────────────────────────────────────────
+@app.post("/api/bug-reports", status_code=201)
+def create_bug_report(body: BugReportIn, user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    """Submit a bug report or feature request."""
+    if not body.title.strip():
+        raise HTTPException(400, "Title is required")
+    if not body.description.strip():
+        raise HTTPException(400, "Description is required")
+    if body.report_type not in ["bug", "feature"]:
+        raise HTTPException(400, "Report type must be 'bug' or 'feature'")
+
+    report = BugReport(
+        user_id=user.id,
+        report_type=BugReportType(body.report_type),
+        title=body.title.strip(),
+        description=body.description.strip(),
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return {
+        "id": report.id,
+        "user_id": report.user_id,
+        "username": user.username,
+        "report_type": report.report_type.value,
+        "title": report.title,
+        "description": report.description,
+        "status": report.status.value,
+        "created_at": report.created_at,
+        "updated_at": report.updated_at,
+    }
+
+
+@app.get("/api/bug-reports")
+def list_my_bug_reports(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List bug reports submitted by the current user."""
+    reports = (db.query(BugReport)
+               .filter(BugReport.user_id == user.id)
+               .order_by(BugReport.created_at.desc())
+               .limit(50).all())
+    return [{
+        "id": r.id,
+        "user_id": r.user_id,
+        "username": user.username,
+        "report_type": r.report_type.value,
+        "title": r.title,
+        "description": r.description,
+        "status": r.status.value,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+        "reply_count": len(r.replies),
+    } for r in reports]
+
+
+@app.get("/api/bug-reports/{report_id}")
+def get_bug_report(report_id: int, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Get a specific bug report with all replies."""
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if report.user_id != user.id and not user.is_admin:
+        raise HTTPException(403, "Access denied")
+
+    return {
+        "id": report.id,
+        "user_id": report.user_id,
+        "username": report.user.username,
+        "report_type": report.report_type.value,
+        "title": report.title,
+        "description": report.description,
+        "status": report.status.value,
+        "created_at": report.created_at,
+        "updated_at": report.updated_at,
+        "replies": [{
+            "id": reply.id,
+            "report_id": reply.report_id,
+            "user_id": reply.user_id,
+            "username": reply.user.username,
+            "is_admin_reply": reply.is_admin_reply,
+            "content": reply.content,
+            "created_at": reply.created_at,
+        } for reply in report.replies],
+    }
+
+
+@app.post("/api/bug-reports/{report_id}/reply", status_code=201)
+def reply_to_bug_report(report_id: int, body: BugReportReplyIn,
+                        user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Reply to a bug report (users can reply to their own reports)."""
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if report.user_id != user.id and not user.is_admin:
+        raise HTTPException(403, "Access denied")
+    if not body.content.strip():
+        raise HTTPException(400, "Reply content is required")
+
+    reply = BugReportReply(
+        report_id=report_id,
+        user_id=user.id,
+        is_admin_reply=user.is_admin,
+        content=body.content.strip(),
+    )
+    db.add(reply)
+    db.commit()
+    db.refresh(reply)
+    return {
+        "id": reply.id,
+        "report_id": reply.report_id,
+        "user_id": reply.user_id,
+        "username": user.username,
+        "is_admin_reply": reply.is_admin_reply,
+        "content": reply.content,
+        "created_at": reply.created_at,
+    }
+
+
+# ── Bug Reports (Admin) ────────────────────────────────────────────────────
+@app.get("/api/admin/bug-reports/stats")
+def admin_bug_report_stats(_: None = Depends(require_admin), db: Session = Depends(get_db)):
+    """Get statistics about bug reports."""
+    total = db.query(BugReport).count()
+    open_count = db.query(BugReport).filter(BugReport.status == BugReportStatus.open).count()
+    in_progress = db.query(BugReport).filter(BugReport.status == BugReportStatus.in_progress).count()
+    resolved = db.query(BugReport).filter(BugReport.status == BugReportStatus.resolved).count()
+    closed = db.query(BugReport).filter(BugReport.status == BugReportStatus.closed).count()
+    bugs = db.query(BugReport).filter(BugReport.report_type == BugReportType.bug).count()
+    features = db.query(BugReport).filter(BugReport.report_type == BugReportType.feature).count()
+
+    return {
+        "total": total,
+        "open": open_count,
+        "in_progress": in_progress,
+        "resolved": resolved,
+        "closed": closed,
+        "bugs": bugs,
+        "features": features,
+    }
+
+
+@app.get("/api/admin/bug-reports")
+def admin_list_bug_reports(status: Optional[str] = None, _: None = Depends(require_admin),
+                            db: Session = Depends(get_db)):
+    """List all bug reports for admin review."""
+    query = db.query(BugReport).order_by(BugReport.created_at.desc())
+    if status:
+        try:
+            status_enum = BugReportStatus(status)
+            query = query.filter(BugReport.status == status_enum)
+        except ValueError:
+            pass  # Ignore invalid status filter
+    reports = query.limit(100).all()
+    return [{
+        "id": r.id,
+        "user_id": r.user_id,
+        "username": r.user.username,
+        "report_type": r.report_type.value,
+        "title": r.title,
+        "description": r.description,
+        "status": r.status.value,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+        "reply_count": len(r.replies),
+    } for r in reports]
+
+
+@app.get("/api/admin/bug-reports/{report_id}")
+def admin_get_bug_report(report_id: int, _: None = Depends(require_admin),
+                         db: Session = Depends(get_db)):
+    """Get a specific bug report with all replies (admin view)."""
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+
+    return {
+        "id": report.id,
+        "user_id": report.user_id,
+        "username": report.user.username,
+        "report_type": report.report_type.value,
+        "title": report.title,
+        "description": report.description,
+        "status": report.status.value,
+        "created_at": report.created_at,
+        "updated_at": report.updated_at,
+        "replies": [{
+            "id": reply.id,
+            "report_id": reply.report_id,
+            "user_id": reply.user_id,
+            "username": reply.user.username,
+            "is_admin_reply": reply.is_admin_reply,
+            "content": reply.content,
+            "created_at": reply.created_at,
+        } for reply in report.replies],
+    }
+
+
+@app.post("/api/admin/bug-reports/{report_id}/reply", status_code=201)
+def admin_reply_to_bug_report(report_id: int, body: BugReportReplyIn,
+                               x_admin_key: str = Header(default=""),
+                               db: Session = Depends(get_db)):
+    """Admin reply to a bug report."""
+    if x_admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+    if not body.content.strip():
+        raise HTTPException(400, "Reply content is required")
+
+    # Find an existing admin user, or use the first user as a fallback for admin replies
+    admin_user = db.query(User).filter(User.is_admin == True).first()
+    if not admin_user:
+        # If no admin user exists, get the first user (typically the system creator)
+        admin_user = db.query(User).first()
+    
+    # If still no user exists at all, raise an error
+    if not admin_user:
+        raise HTTPException(500, "No users exist in the system to attribute admin reply")
+    
+    admin_user_id = admin_user.id
+
+    reply = BugReportReply(
+        report_id=report_id,
+        user_id=admin_user_id,
+        is_admin_reply=True,
+        content=body.content.strip(),
+    )
+    db.add(reply)
+    db.commit()
+    db.refresh(reply)
+    return {
+        "id": reply.id,
+        "report_id": reply.report_id,
+        "user_id": reply.user_id,
+        "username": "Admin",
+        "is_admin_reply": True,
+        "content": reply.content,
+        "created_at": reply.created_at,
+    }
+
+
+@app.patch("/api/admin/bug-reports/{report_id}/status")
+def admin_update_bug_report_status(report_id: int, new_status: str,
+                                    _: None = Depends(require_admin),
+                                    db: Session = Depends(get_db)):
+    """Update the status of a bug report."""
+    report = db.query(BugReport).filter(BugReport.id == report_id).first()
+    if not report:
+        raise HTTPException(404, "Report not found")
+
+    try:
+        status_enum = BugReportStatus(new_status)
+    except ValueError:
+        raise HTTPException(400, f"Invalid status. Must be one of: {[s.value for s in BugReportStatus]}")
+
+    report.status = status_enum
+    db.commit()
+    db.refresh(report)
+    return {
+        "id": report.id,
+        "status": report.status.value,
+        "updated_at": report.updated_at,
+    }
+
 
 # ── Haversine helper ───────────────────────────────────────────────────────
 import math as _math
