@@ -1,0 +1,65 @@
+/* ── Admin-specific styles ── */
+.admin-nav { display:flex; align-items:center; gap:10px; padding:10px 16px; background:var(--surface); border-bottom:1px solid var(--border); flex-wrap:wrap; }
+.admin-nav .logo { font-size:1.1rem; font-weight:700; flex:1; }
+
+.admin-panel { max-width:1100px; margin:0 auto; padding:28px 20px; }
+
+.admin-section-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+.admin-section-header h2 { font-size:1rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:.5px; }
+
+/* Stats grid */
+.stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:16px; margin-bottom:20px; }
+.stat-card { background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:20px 16px; text-align:center; }
+.stat-card.online  { border-color:#22c55e44; }
+.stat-card.premium { border-color:#f59e0b44; }
+.stat-card.revenue { border-color:#3b82f644; }
+.stat-icon { font-size:1.8rem; margin-bottom:8px; }
+.stat-val  { font-size:2rem; font-weight:700; }
+.stat-label { color:var(--text-muted); font-size:.85rem; margin-top:4px; }
+
+.btn-refresh { padding:7px 14px; background:transparent; border:1px solid var(--border); border-radius:8px; color:var(--text-muted); cursor:pointer; font-size:.85rem; }
+.btn-refresh:hover { border-color:var(--accent); color:var(--accent); }
+
+/* User table */
+.admin-table { width:100%; border-collapse:collapse; margin-top:12px; font-size:.88rem; }
+.admin-table th { background:var(--surface2); padding:10px 12px; text-align:left; color:var(--text-muted); font-size:.75rem; text-transform:uppercase; border-bottom:1px solid var(--border); }
+.admin-table td { padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.admin-table tr:hover td { background:var(--surface2); }
+
+/* Wallet */
+.wallet-connect-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:14px 16px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; margin-bottom:20px; }
+.wallet-connect-bar span { flex:1; color:var(--text-muted); font-size:.9rem; }
+.wallet-connect-bar select { padding:6px 10px; background:var(--surface); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:.85rem; cursor:pointer; }
+
+.wallet-balance-card { display:flex; gap:20px; padding:16px 20px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; margin-bottom:20px; }
+.bal-label { color:var(--text-muted); font-size:.8rem; margin-bottom:4px; }
+.bal-val   { font-size:1.3rem; font-weight:700; color:var(--accent); }
+
+.admin-form-card { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:16px; }
+.admin-form-card h3 { font-size:1rem; margin-bottom:10px; }
+.form-row { display:flex; gap:10px; flex-wrap:wrap; }
+.form-row input { flex:1; min-width:160px; padding:9px 12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:.9rem; }
+.form-row input:focus { outline:none; border-color:var(--accent); }
+
+.biometric-bar { display:flex; align-items:center; gap:12px; margin:14px 0; flex-wrap:wrap; }
+.btn-biometric { padding:9px 18px; background:#6b21a8; border:none; border-radius:8px; color:#fff; font-weight:600; cursor:pointer; font-size:.9rem; }
+.btn-biometric:hover { filter:brightness(1.1); }
+.biometric-status { font-size:.85rem; color:var(--text-muted); }
+
+.btn-send { padding:10px 24px; background:var(--success); border:none; border-radius:8px; color:#fff; font-weight:600; cursor:pointer; font-size:.95rem; }
+.btn-send:disabled { opacity:.4; cursor:not-allowed; }
+.btn-send:not(:disabled):hover { filter:brightness(1.1); }
+
+/* Bank */
+.bank-status-card { display:flex; align-items:center; gap:16px; padding:16px 20px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; margin-bottom:20px; }
+.bank-status-icon { font-size:2rem; flex-shrink:0; }
+.bank-status-card div { flex:1; }
+.bank-status-card strong { display:block; font-size:1rem; }
+.bank-status-card small  { color:var(--text-muted); font-size:.82rem; }
+
+#users-table-wrap { overflow-x:auto; }
+
+@media(max-width:600px){
+  .wallet-balance-card{flex-direction:column;}
+  .form-row input{min-width:100%;}
+}

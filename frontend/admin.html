@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>ZTracky Admin</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link rel="stylesheet" href="admin.css"/>
+</head>
+<body>
+  <!-- Admin Login -->
+  <div id="admin-login" class="card">
+    <div class="app-header">
+      <span class="logo">🛡</span>
+      <h1>ZTracky Admin</h1>
+      <p class="tagline">Operations &amp; Finance Dashboard</p>
+    </div>
+    <h2>Admin Access</h2>
+    <input id="admin-key-input" type="password" placeholder="Admin API key"/>
+    <button onclick="adminLogin()">Unlock Dashboard</button>
+    <div id="admin-login-error" class="error" style="display:none"></div>
+  </div>
+
+  <!-- Admin Dashboard -->
+  <div id="admin-dashboard" style="display:none">
+    <nav class="admin-nav">
+      <span class="logo">🛡 ZTracky Admin</span>
+      <div class="nav-buttons">
+        <button class="tab-btn active" onclick="adminTab('overview')">📊 Overview</button>
+        <button class="tab-btn" onclick="adminTab('users')">👥 Users</button>
+        <button class="tab-btn" onclick="adminTab('wallet')">💎 Wallet</button>
+        <button class="tab-btn" onclick="adminTab('bank')">🏦 Bank</button>
+        <button class="btn-danger" onclick="adminLogout()">Sign Out</button>
+      </div>
+    </nav>
+
+    <!-- ── Overview ── -->
+    <div id="atab-overview" class="admin-panel">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-icon">👥</div><div class="stat-val" id="s-total">–</div><div class="stat-label">Total Users</div></div>
+        <div class="stat-card online"><div class="stat-icon">🟢</div><div class="stat-val" id="s-online">–</div><div class="stat-label">Online Now</div></div>
+        <div class="stat-card premium"><div class="stat-icon">⭐</div><div class="stat-val" id="s-premium">–</div><div class="stat-label">Premium</div></div>
+        <div class="stat-card revenue"><div class="stat-icon">💰</div><div class="stat-val" id="s-revenue">–</div><div class="stat-label">Revenue (USD)</div></div>
+      </div>
+      <button class="btn-refresh" onclick="loadStats()">↺ Refresh Stats</button>
+    </div>
+
+    <!-- ── Users ── -->
+    <div id="atab-users" class="admin-panel" style="display:none">
+      <div class="admin-section-header">
+        <h2>Registered Users</h2>
+        <button class="btn-refresh" onclick="loadUsers()">↺ Refresh</button>
+      </div>
+      <div id="users-table-wrap">
+        <table class="admin-table">
+          <thead><tr><th>ID</th><th>Username</th><th>Email</th><th>Phone</th><th>Premium</th><th>Joined</th><th>Action</th></tr></thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Wallet (Crypto) ── -->
+    <div id="atab-wallet" class="admin-panel" style="display:none">
+
+      <div class="wallet-connect-bar">
+        <span id="wallet-addr">No wallet connected</span>
+        <button class="rc-btn rc-btn-view" onclick="connectMetaMask()">🦊 Connect MetaMask</button>
+        <select id="wallet-network" onchange="switchNetwork()">
+          <option value="0x1">Ethereum Mainnet</option>
+          <option value="0x89">Polygon</option>
+          <option value="0x38">BNB Chain</option>
+          <option value="0xaa36a7" selected>Sepolia Testnet</option>
+        </select>
+      </div>
+
+      <div class="wallet-balance-card">
+        <div>
+          <div class="bal-label">Contract Balance</div>
+          <div class="bal-val" id="contract-bal">–</div>
+        </div>
+        <div>
+          <div class="bal-label">Wallet Balance</div>
+          <div class="bal-val" id="wallet-bal">–</div>
+        </div>
+      </div>
+
+      <!-- Send ETH -->
+      <div class="admin-form-card">
+        <h3>💸 Send ETH / Native Token</h3>
+        <p class="setting-hint">MetaMask signs the transaction on your device. No private keys stored here.</p>
+        <div class="form-row">
+          <input id="send-to" type="text" placeholder="Recipient address (0x…)"/>
+          <input id="send-amount" type="number" step="0.0001" placeholder="Amount (ETH)"/>
+        </div>
+        <input id="send-note" type="text" placeholder="Memo / purpose" style="width:100%;margin-top:8px"/>
+        <div class="biometric-bar">
+          <button class="btn-biometric" id="btn-biometric-eth" onclick="startBiometricAuth('eth')">
+            👁 Authenticate with Fingerprint / Face ID
+          </button>
+          <span class="biometric-status" id="bio-status-eth">Not authenticated</span>
+        </div>
+        <button class="btn-send" id="btn-send-eth" onclick="sendETH()" disabled>Send ETH via MetaMask</button>
+      </div>
+
+      <!-- Send ERC-20 -->
+      <div class="admin-form-card">
+        <h3>🪙 Send ERC-20 Token</h3>
+        <div class="form-row">
+          <input id="erc20-token" type="text" placeholder="Token contract (0x…)"/>
+          <input id="erc20-to"    type="text" placeholder="Recipient address (0x…)"/>
+          <input id="erc20-amount" type="number" step="1" placeholder="Amount (units)"/>
+        </div>
+        <div class="biometric-bar">
+          <button class="btn-biometric" id="btn-biometric-erc20" onclick="startBiometricAuth('erc20')">
+            👁 Authenticate with Fingerprint / Face ID
+          </button>
+          <span class="biometric-status" id="bio-status-erc20">Not authenticated</span>
+        </div>
+        <button class="btn-send" id="btn-send-erc20" onclick="sendERC20()" disabled>Send ERC-20 via MetaMask</button>
+      </div>
+
+      <!-- Setup fingerprint (first time) -->
+      <div class="admin-form-card">
+        <h3>🔐 Fingerprint / Biometric Setup</h3>
+        <p class="setting-hint">Register your device's fingerprint or Face ID to authorise wallet transfers. Only needs to be done once per device.</p>
+        <button class="btn-save" onclick="registerBiometric()">Register Biometric</button>
+        <div id="biometric-reg-msg" class="message" style="display:none"></div>
+      </div>
+
+      <!-- Tx history -->
+      <div class="admin-form-card">
+        <h3>📋 Transfer History</h3>
+        <button class="btn-refresh" onclick="loadWalletHistory()">↺ Load</button>
+        <div id="tx-history"></div>
+      </div>
+    </div>
+
+    <!-- ── Bank (Stripe Connect) ── -->
+    <div id="atab-bank" class="admin-panel" style="display:none">
+
+      <div class="bank-status-card" id="bank-status-card">
+        <div class="bank-status-icon" id="bank-status-icon">🏦</div>
+        <div>
+          <strong id="bank-status-label">Bank account not linked</strong>
+          <small id="bank-status-detail">Connect via Stripe to receive bank payouts</small>
+        </div>
+        <button class="rc-btn rc-btn-view" onclick="connectBank()">Link Bank Account</button>
+      </div>
+
+      <div class="admin-form-card">
+        <h3>💳 Send Payout to Bank</h3>
+        <p class="setting-hint">Transfer collected Stripe revenue directly to your linked bank account. Requires biometric authentication.</p>
+        <div class="form-row">
+          <input id="payout-amount" type="number" step="1" placeholder="Amount (USD cents, e.g. 5000 = $50)"/>
+          <input id="payout-dest"   type="text"   placeholder="Stripe Connect Account ID (acct_…)"/>
+        </div>
+        <div class="biometric-bar">
+          <button class="btn-biometric" id="btn-biometric-bank" onclick="startBiometricAuth('bank')">
+            👁 Authenticate with Fingerprint / Face ID
+          </button>
+          <span class="biometric-status" id="bio-status-bank">Not authenticated</span>
+        </div>
+        <button class="btn-send" id="btn-send-payout" onclick="sendPayout()" disabled>Send Bank Payout</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="admin.js"></script>
+</body>
+</html>

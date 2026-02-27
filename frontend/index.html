@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZTracky – Location Tracking</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Auth Section -->
+  <div id="auth-section" class="card">
+    <div class="app-header">
+      <span class="logo">📍</span>
+      <h1>ZTracky</h1>
+      <p class="tagline">Precise location sharing with trusted contacts</p>
+    </div>
+
+    <div id="login-form">
+      <h2>Sign In</h2>
+      <input id="login-username" type="text" placeholder="Username" autocomplete="username" />
+      <input id="login-password" type="password" placeholder="Password" autocomplete="current-password" />
+      <button onclick="login()">Sign In</button>
+      <p class="switch-link">Don't have an account? <a href="#" onclick="showRegister()">Register</a></p>
+    </div>
+
+    <div id="register-form" style="display:none">
+      <h2>Create Account</h2>
+      <input id="reg-username" type="text" placeholder="Username" autocomplete="username" />
+      <input id="reg-email" type="email" placeholder="Email" autocomplete="email" />
+      <input id="reg-password" type="password" placeholder="Password" autocomplete="new-password" />
+      <button onclick="register()">Create Account</button>
+      <p class="switch-link">Already have an account? <a href="#" onclick="showLogin()">Sign In</a></p>
+    </div>
+
+    <div id="auth-error" class="error" style="display:none"></div>
+  </div>
+
+  <!-- Main App Section -->
+  <div id="app-section" style="display:none">
+    <nav>
+      <span class="logo">📍 ZTracky</span>
+      <span id="nav-user"></span>
+      <div class="nav-buttons">
+        <button class="tab-btn active" onclick="showTab('map')">🗺 Map</button>
+        <button class="tab-btn" onclick="showTab('requests')">📨 Requests</button>
+        <button class="tab-btn" onclick="showTab('friends')">👥 Friends</button>
+        <button class="tab-btn" onclick="showTab('chat')">💬 Chat</button>
+        <button class="tab-btn" onclick="showTab('calltrack')">📞 Call Track</button>
+        <button class="tab-btn" onclick="showTab('remote')">🛡 Remote</button>
+        <button class="tab-btn" onclick="showTab('premium')">⭐ Premium</button>
+        <button class="tab-btn" onclick="showTab('settings')">⚙️ Battery</button>
+        <button class="btn-danger" onclick="logout()">Sign Out</button>
+      </div>
+    </nav>
+
+    <!-- Map Tab -->
+    <div id="tab-map" class="tab-content active">
+      <div id="map"></div>
+      <button class="geofence-toggle-btn" onclick="toggleGeofencePanel()" title="Manage geofence alerts">🔔</button>
+      <div id="map-status" class="status-bar">
+        <span id="location-status">📡 Getting your location…</span>
+        <span id="nearby-badge" class="nearby-badge" style="display:none" onclick="showTab('map')">📶 <span id="nearby-count">0</span> nearby</span>
+        <span id="ws-status" class="ws-indicator">● Connecting</span>
+      </div>
+    </div>
+
+    <!-- Geofence controls panel (overlay on map) - toggled from map tab -->
+    <div id="geofence-panel" class="geofence-panel" style="display:none">
+      <div class="section-title" style="margin:0 0 10px">🔔 Geofence Alerts</div>
+      <div class="input-row" style="margin-bottom:8px">
+        <input id="gf-label" type="text" placeholder="Label (e.g. Home)"/>
+        <input id="gf-radius" type="number" placeholder="Radius (m)" value="200"/>
+        <button onclick="addGeofenceAtCurrentLocation()">+ Add at My Location</button>
+      </div>
+      <div id="gf-msg" class="message" style="display:none"></div>
+      <div id="geofence-list" style="margin-top:8px"></div>
+      <hr style="border-color:var(--border);margin:10px 0"/>
+      <div class="section-title" style="margin:0 0 6px;font-size:.8rem">Recent Alerts</div>
+      <div id="geofence-alerts-list"><p class="empty">No alerts yet</p></div>
+      <button class="rc-close-btn" style="margin-top:10px" onclick="toggleGeofencePanel()">Close</button>
+    </div>
+
+    <!-- Navigation steps panel (overlay on map, shown during active navigation) -->
+    <div id="nav-panel" class="nav-panel" style="display:none">
+      <div id="nav-info" style="margin-bottom:8px;font-weight:600"></div>
+      <div id="nav-steps" class="nav-steps-list"></div>
+      <button class="rc-close-btn" style="margin-top:10px;width:100%" onclick="closeNavigation()">✕ End Navigation</button>
+    </div>
+
+    <!-- Requests Tab -->
+    <div id="tab-requests" class="tab-content" style="display:none">
+      <div class="panel">
+        <h2>Send Tracking Request</h2>
+        <div class="input-row">
+          <input id="req-username" type="text" placeholder="Enter username" />
+          <button onclick="sendRequest()">Send Request</button>
+        </div>
+        <div id="req-message" class="message" style="display:none"></div>
+
+        <h2>Incoming Requests</h2>
+        <div id="incoming-requests"><p class="empty">No pending requests</p></div>
+
+        <h2>Sent Requests</h2>
+        <div id="sent-requests"><p class="empty">No sent requests</p></div>
+      </div>
+    </div>
+
+    <!-- Friends Tab -->
+    <div id="tab-friends" class="tab-content" style="display:none">
+      <div class="panel">
+        <h2>Friends</h2>
+        <div id="friends-list"><p class="empty">No friends yet. Send a tracking request!</p></div>
+      </div>
+    </div>
+
+    <!-- Chat Tab -->
+    <div id="tab-chat" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div class="section-title">💬 In-App Chat <span class="badge badge-accepted" id="chat-premium-badge" style="display:none">Premium</span></div>
+        <p class="setting-hint">Chat with accepted friends. Connect your WhatsApp or Facebook for quick deep-link access too.</p>
+
+        <!-- Friend picker -->
+        <div id="chat-friend-picker" style="margin-bottom:14px">
+          <select id="chat-friend-select" onchange="openChat()" style="width:100%;padding:9px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+            <option value="">— Select a friend to chat —</option>
+          </select>
+        </div>
+
+        <!-- Social deep-links for selected friend -->
+        <div id="social-links-bar" style="display:none;gap:10px;margin-bottom:14px" class="input-row">
+          <a id="social-wa-link" href="#" target="_blank" rel="noopener" class="rc-btn rc-btn-view" style="text-decoration:none">💬 WhatsApp</a>
+          <a id="social-fb-link" href="#" target="_blank" rel="noopener" class="rc-btn rc-btn-view" style="background:#1877f2;text-decoration:none">💙 Facebook</a>
+        </div>
+
+        <!-- In-app message area -->
+        <div id="chat-area" style="display:none">
+          <div id="chat-messages" class="chat-messages"></div>
+          <div class="chat-input-row">
+            <input id="chat-input" type="text" placeholder="Type a message…" onkeydown="if(event.key==='Enter')sendChatMessage()"/>
+            <button onclick="sendChatMessage()">Send</button>
+          </div>
+          <p class="setting-hint" id="chat-premium-note" style="display:none">⭐ Sending messages requires Premium. You can still read messages sent to you.</p>
+        </div>
+
+        <!-- My social accounts section -->
+        <div style="margin-top:28px">
+          <div class="section-title">🔗 My Social Accounts</div>
+          <p class="setting-hint">Add your handles so friends can reach you on WhatsApp or Facebook with one tap.</p>
+          <div class="input-row" style="margin-bottom:8px">
+            <input id="my-wa" type="tel" placeholder="WhatsApp number (+1234567890)"/>
+          </div>
+          <div class="input-row" style="margin-bottom:12px">
+            <input id="my-fb" type="text" placeholder="Facebook username or profile URL"/>
+          </div>
+          <button class="btn-save" onclick="saveSocialLinks()">Save Social Links</button>
+          <div id="social-save-msg" class="message" style="display:none"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Call Track Tab -->
+    <div id="tab-calltrack" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div class="section-title">📞 Call-Based Tracking <span class="prem-badge">Premium</span></div>
+        <p class="setting-hint">
+          Received a suspicious call — or a ransom call about a loved one?
+          Enter the caller's phone number and ZTracky will use carrier lookup +
+          nearby device data to estimate where the call originated, then pin
+          the confidence zone on the map.
+        </p>
+
+        <!-- Phone input -->
+        <div class="input-row" style="margin-bottom:10px">
+          <input id="ct-phone" type="tel" placeholder="Caller number (+1234567890)" style="flex:1"/>
+          <button onclick="submitCallTrack()">🔍 Locate</button>
+        </div>
+        <div id="ct-msg" class="message" style="display:none"></div>
+
+        <!-- Result card -->
+        <div id="ct-result" style="display:none;margin-top:16px">
+          <div class="impact-card">
+            <div class="impact-icon" id="ct-result-icon">📡</div>
+            <div class="impact-body">
+              <strong id="ct-result-phone"></strong>
+              <span id="ct-result-carrier"></span>
+              <small id="ct-result-notes" style="font-size:.75rem;opacity:.7"></small>
+            </div>
+            <button class="rc-btn rc-btn-view" onclick="showCallTrackOnMap()">🗺 View on Map</button>
+          </div>
+        </div>
+
+        <!-- History -->
+        <div class="section-title" style="margin-top:24px">Recent Lookups</div>
+        <div id="ct-history"><p class="empty">No lookups yet</p></div>
+
+      </div>
+    </div>
+
+    <!-- Remote Control Tab -->
+    <div id="tab-remote" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <!-- Connection status strip -->
+        <div class="rc-status-bar">
+          <span id="rc-ws-dot" class="online-dot offline"></span>
+          <span id="rc-ws-label">Connecting…</span>
+          <button class="rc-refresh-btn" onclick="refreshControlPage()">↺ Refresh</button>
+        </div>
+
+        <!-- My device permissions -->
+        <div class="section-title">🛡 My Device — What I Allow</div>
+        <p class="setting-hint">Configure what trusted friends can do on <strong>this device</strong> remotely. Designed for anti-theft and family safety.</p>
+        <div id="my-perms-list" class="perms-grid">
+          <div class="perm-card">
+            <div class="perm-info">
+              <span class="perm-icon">👁</span>
+              <div><strong>Screen Viewing</strong><small>Let the owner watch this screen live</small></div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="perm-screen" onchange="togglePerm('allowScreenView')"/><span class="toggle-track"></span></label>
+          </div>
+          <div class="perm-card">
+            <div class="perm-info">
+              <span class="perm-icon">🔒</span>
+              <div><strong>Remote Lock</strong><small>Let the owner lock this device</small></div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="perm-lock" onchange="togglePerm('allowLock')"/><span class="toggle-track"></span></label>
+          </div>
+          <div class="perm-card">
+            <div class="perm-info">
+              <span class="perm-icon">📴</span>
+              <div><strong>Stealth Mode</strong><small>Show a fake "powered-off" screen while tracking continues</small></div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="perm-stealth" onchange="togglePerm('allowStealth')"/><span class="toggle-track"></span></label>
+          </div>
+        </div>
+
+        <!-- Control friends -->
+        <div class="section-title" style="margin-top:28px">📱 Control Friends' Devices</div>
+        <p class="setting-hint">Friends are shown here when they have the app open. Actions only work if the friend has enabled the corresponding permission above.</p>
+        <div id="control-list"><p class="empty">No friends connected right now</p></div>
+
+        <!-- Inline screen viewer -->
+        <div id="screen-viewer-wrap" style="display:none">
+          <div class="screen-viewer-header">
+            <span id="screen-viewer-label">👁 Viewing</span>
+            <button class="rc-close-btn" onclick="closeScreenViewer()">✕ Stop</button>
+          </div>
+          <video id="screen-video" autoplay playsinline muted class="screen-video"></video>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Premium Tab -->
+    <div id="tab-premium" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div id="premium-status-banner" class="impact-card" style="display:none">
+          <div class="impact-icon">⭐</div>
+          <div class="impact-body"><strong>ZTracky Premium — Active</strong><span>All premium features unlocked</span></div>
+          <div class="impact-badge" style="color:#f59e0b">●●●●●</div>
+        </div>
+        <div id="free-status-banner" class="impact-card">
+          <div class="impact-icon">🔒</div>
+          <div class="impact-body"><strong>Free Plan</strong><span>Upgrade to unlock all features — $9.99 / month</span></div>
+          <div class="impact-badge" style="color:var(--text-muted)">●○○○○</div>
+        </div>
+
+        <div class="section-title" style="margin-top:24px">⭐ Premium Features</div>
+        <div class="perms-grid">
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">📍</span><div><strong>Location History</strong><small>Last 100 location points + route playback on the map</small></div></div><span class="prem-badge" id="feat-history">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">⚡</span><div><strong>Priority Updates</strong><small>10-second minimum interval (free: 30 s minimum)</small></div></div><span class="prem-badge" id="feat-priority">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">👥</span><div><strong>Unlimited Friends</strong><small>Free plan: up to 5 friends</small></div></div><span class="prem-badge" id="feat-friends">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">📴</span><div><strong>Advanced Remote Control</strong><small>Screen view, stealth mode, remote lock</small></div></div><span class="prem-badge" id="feat-remote">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">💬</span><div><strong>In-App Chat</strong><small>Send and receive messages with friends</small></div></div><span class="prem-badge" id="feat-chat">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">🔔</span><div><strong>Geofence Alerts</strong><small>Get notified when entering or leaving an area</small></div></div><span class="prem-badge" id="feat-geo">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">📶</span><div><strong>Nearby Phones Detection</strong><small>See how many devices are online near you</small></div></div><span class="prem-badge" id="feat-nearby">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">📞</span><div><strong>Call-Based Tracking</strong><small>Use a call's caller ID to estimate where it originated — helpful in emergency situations</small></div></div><span class="prem-badge" id="feat-calltrack">🔒</span></div>
+          <div class="perm-card"><div class="perm-info"><span class="perm-icon">🧭</span><div><strong>Trail Navigation</strong><small>Get turn-by-turn directions to a friend's location with route options</small></div></div><span class="prem-badge" id="feat-navigate">🔒</span></div>
+        </div>
+
+        <!-- Lost-phone mode -->
+        <div class="section-title" style="margin-top:28px">📱 Phone Number &amp; Lost Mode</div>
+        <p class="setting-hint">Register your phone number so you can receive an SMS link that silently activates location tracking — even if your phone is stolen and the app isn't open.</p>
+        <div class="input-row" style="margin-bottom:12px">
+          <input id="phone-input" type="tel" placeholder="+1234567890"/>
+          <button onclick="savePhone()">Save Number</button>
+        </div>
+        <div id="phone-msg" class="message" style="display:none"></div>
+        <button class="rc-btn rc-btn-stealth" style="margin-top:8px" onclick="activateLostMode()">📴 Report Phone Stolen (Send SMS)</button>
+        <div id="lost-msg" class="message" style="display:none"></div>
+
+        <!-- Route playback (premium) -->
+        <div id="history-section" style="display:none;margin-top:28px">
+          <div class="section-title">🗺 Route Playback</div>
+          <p class="setting-hint">Your last 100 recorded location points animated on the map.</p>
+          <button class="btn-save" onclick="playbackRoute()">▶ Play Route on Map</button>
+        </div>
+
+        <!-- Payment options -->
+        <div id="payment-section">
+          <div class="section-title" style="margin-top:28px">💳 Subscribe — $9.99 / month</div>
+
+          <!-- Stripe -->
+          <div class="admin-form-card" style="margin-bottom:12px">
+            <h3>💳 Pay with Card (Stripe)</h3>
+            <p class="setting-hint">Secure checkout hosted by Stripe. No card details touch our servers.</p>
+            <button class="btn-save" onclick="stripeCheckout()">Checkout with Card →</button>
+          </div>
+
+          <!-- Ethereum -->
+          <div class="admin-form-card">
+            <h3>⟠ Pay with Ethereum (MetaMask)</h3>
+            <p class="setting-hint">Subscribe directly on-chain via our smart contract. Works on Ethereum, Polygon and any EVM network.</p>
+            <div class="form-row" style="margin-bottom:12px">
+              <select id="eth-network" style="flex:1;padding:8px 10px;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+                <option value="0xaa36a7">Sepolia Testnet (test)</option>
+                <option value="0x1">Ethereum Mainnet</option>
+                <option value="0x89">Polygon</option>
+              </select>
+            </div>
+            <button class="btn-save" style="background:#7c3aed" onclick="ethSubscribe()">Pay with MetaMask →</button>
+            <div id="eth-pay-msg" class="message" style="display:none"></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Battery/Settings Tab -->
+    <div id="tab-settings" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <div class="impact-card" id="impact-card">
+          <div class="impact-icon">🔋</div>
+          <div class="impact-body">
+            <strong id="impact-label">Balanced</strong>
+            <span id="impact-desc">Updates every 30 s · sends only if moved 10 m · low-power GPS</span>
+          </div>
+          <div class="impact-badge" id="impact-badge">●●○○○</div>
+        </div>
+
+        <!-- Update Interval -->
+        <div class="setting-group">
+          <div class="setting-header">
+            <label for="s-interval">Update Interval</label>
+            <span class="setting-value" id="s-interval-val">30 s</span>
+          </div>
+          <p class="setting-hint">How often your location is sent to friends. Longer = less battery &amp; data.</p>
+          <input type="range" id="s-interval" class="slider"
+                 min="0" max="7" step="1" value="2"
+                 oninput="onIntervalChange(this.value)" />
+          <div class="slider-labels">
+            <span>10 s</span><span>20 s</span><span>30 s</span><span>1 min</span>
+            <span>2 min</span><span>5 min</span><span>10 min</span><span>15 min</span>
+          </div>
+        </div>
+
+        <!-- Movement Threshold -->
+        <div class="setting-group">
+          <div class="setting-header">
+            <label for="s-threshold">Movement Threshold</label>
+            <span class="setting-value" id="s-threshold-val">10 m</span>
+          </div>
+          <p class="setting-hint">Skip sending if you haven't moved this far. Keeps you invisible when stationary.</p>
+          <input type="range" id="s-threshold" class="slider"
+                 min="0" max="5" step="1" value="2"
+                 oninput="onThresholdChange(this.value)" />
+          <div class="slider-labels">
+            <span>Always</span><span>5 m</span><span>10 m</span>
+            <span>25 m</span><span>50 m</span><span>100 m</span>
+          </div>
+        </div>
+
+        <!-- Accuracy Mode -->
+        <div class="setting-group">
+          <label class="setting-header">GPS Accuracy</label>
+          <p class="setting-hint">High accuracy uses GPS chip. Low Power uses cell towers/Wi-Fi — much kinder to the battery.</p>
+          <div class="radio-pills" id="s-accuracy">
+            <label class="pill">
+              <input type="radio" name="accuracy" value="high" onchange="onAccuracyChange('high')" />
+              <span>🛰 High</span>
+            </label>
+            <label class="pill">
+              <input type="radio" name="accuracy" value="balanced" checked onchange="onAccuracyChange('balanced')" />
+              <span>⚖️ Balanced</span>
+            </label>
+            <label class="pill">
+              <input type="radio" name="accuracy" value="low" onchange="onAccuracyChange('low')" />
+              <span>🌿 Low Power</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Background Throttle -->
+        <div class="setting-group">
+          <div class="setting-header">
+            <label for="s-bgthrottle">Background Throttle</label>
+            <span class="setting-value" id="s-bgthrottle-val">5×</span>
+          </div>
+          <p class="setting-hint">When the app is in the background, multiply the update interval by this factor. 10× with 30 s interval = updates every 5 minutes.</p>
+          <input type="range" id="s-bgthrottle" class="slider"
+                 min="0" max="3" step="1" value="2"
+                 oninput="onBgThrottleChange(this.value)" />
+          <div class="slider-labels">
+            <span>Off (1×)</span><span>2×</span><span>5×</span><span>10×</span>
+          </div>
+        </div>
+
+        <button class="btn-save" onclick="saveSettings()">💾 Save &amp; Apply</button>
+        <div id="settings-saved" class="message success" style="display:none">Settings saved and applied!</div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Stealth overlay: simulates powered-off screen ────────────────────── -->
+  <div id="stealth-overlay" style="display:none" aria-hidden="true">
+    <div class="stealth-content">
+      <div id="stealth-time">--:--</div>
+      <div id="stealth-date">--</div>
+      <div class="stealth-battery">
+        <span id="stealth-bat-icon">🔋</span>
+        <span id="stealth-bat-pct">--</span>
+      </div>
+    </div>
+    <!-- Tap 5× rapidly in the bottom-right corner to deactivate -->
+    <div id="stealth-exit-zone" onclick="stealthTap()"></div>
+  </div>
+
+  <!-- ── Remote lock overlay ───────────────────────────────────────────────── -->
+  <div id="lock-overlay" style="display:none" aria-hidden="true">
+    <div class="lock-content">
+      <div class="lock-icon">🔒</div>
+      <div class="lock-msg">Device Locked</div>
+      <div class="lock-sub">Locked remotely by ZTracky</div>
+      <div class="lock-tap-hint" id="lock-tap-hint">Tap 5× to unlock</div>
+    </div>
+    <div id="lock-exit-zone" onclick="lockTap()"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+    // Handle lost-mode deep link on page load
+    const _lostToken = new URLSearchParams(location.search).get('lost_token');
+    if (_lostToken) window._LOST_TOKEN = _lostToken;
+    // Handle Stripe payment return
+    const _payStatus = new URLSearchParams(location.search).get('payment');
+    if (_payStatus) window._PAYMENT_STATUS = _payStatus;
+  </script>
+</body>
+</html>
