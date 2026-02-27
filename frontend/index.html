@@ -18,17 +18,17 @@
 
     <div id="login-form">
       <h2>Sign In</h2>
-      <input id="login-username" type="text" placeholder="Username" />
-      <input id="login-password" type="password" placeholder="Password" />
+      <input id="login-username" type="text" placeholder="Username" autocomplete="username" />
+      <input id="login-password" type="password" placeholder="Password" autocomplete="current-password" />
       <button onclick="login()">Sign In</button>
       <p class="switch-link">Don't have an account? <a href="#" onclick="showRegister()">Register</a></p>
     </div>
 
     <div id="register-form" style="display:none">
       <h2>Create Account</h2>
-      <input id="reg-username" type="text" placeholder="Username" />
-      <input id="reg-email" type="email" placeholder="Email" />
-      <input id="reg-password" type="password" placeholder="Password" />
+      <input id="reg-username" type="text" placeholder="Username" autocomplete="username" />
+      <input id="reg-email" type="email" placeholder="Email" autocomplete="email" />
+      <input id="reg-password" type="password" placeholder="Password" autocomplete="new-password" />
       <button onclick="register()">Create Account</button>
       <p class="switch-link">Already have an account? <a href="#" onclick="showLogin()">Sign In</a></p>
     </div>
@@ -45,6 +45,7 @@
         <button class="tab-btn active" onclick="showTab('map')">🗺 Map</button>
         <button class="tab-btn" onclick="showTab('requests')">📨 Requests</button>
         <button class="tab-btn" onclick="showTab('friends')">👥 Friends</button>
+        <button class="tab-btn" onclick="showTab('remote')">🛡 Remote</button>
         <button class="tab-btn" onclick="showTab('settings')">⚙️ Battery</button>
         <button class="btn-danger" onclick="logout()">Sign Out</button>
       </div>
@@ -85,7 +86,62 @@
       </div>
     </div>
 
-    <!-- Settings Tab -->
+    <!-- Remote Control Tab -->
+    <div id="tab-remote" class="tab-content" style="display:none">
+      <div class="panel">
+
+        <!-- Connection status strip -->
+        <div class="rc-status-bar">
+          <span id="rc-ws-dot" class="online-dot offline"></span>
+          <span id="rc-ws-label">Connecting…</span>
+          <button class="rc-refresh-btn" onclick="refreshControlPage()">↺ Refresh</button>
+        </div>
+
+        <!-- My device permissions -->
+        <div class="section-title">🛡 My Device — What I Allow</div>
+        <p class="setting-hint">Configure what trusted friends can do on <strong>this device</strong> remotely. Designed for anti-theft and family safety.</p>
+        <div id="my-perms-list" class="perms-grid">
+          <div class="perm-card">
+            <div class="perm-info">
+              <span class="perm-icon">👁</span>
+              <div><strong>Screen Viewing</strong><small>Let the owner watch this screen live</small></div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="perm-screen" onchange="togglePerm('allowScreenView')"/><span class="toggle-track"></span></label>
+          </div>
+          <div class="perm-card">
+            <div class="perm-info">
+              <span class="perm-icon">🔒</span>
+              <div><strong>Remote Lock</strong><small>Let the owner lock this device</small></div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="perm-lock" onchange="togglePerm('allowLock')"/><span class="toggle-track"></span></label>
+          </div>
+          <div class="perm-card">
+            <div class="perm-info">
+              <span class="perm-icon">📴</span>
+              <div><strong>Stealth Mode</strong><small>Show a fake "powered-off" screen while tracking continues</small></div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="perm-stealth" onchange="togglePerm('allowStealth')"/><span class="toggle-track"></span></label>
+          </div>
+        </div>
+
+        <!-- Control friends -->
+        <div class="section-title" style="margin-top:28px">📱 Control Friends' Devices</div>
+        <p class="setting-hint">Friends are shown here when they have the app open. Actions only work if the friend has enabled the corresponding permission above.</p>
+        <div id="control-list"><p class="empty">No friends connected right now</p></div>
+
+        <!-- Inline screen viewer -->
+        <div id="screen-viewer-wrap" style="display:none">
+          <div class="screen-viewer-header">
+            <span id="screen-viewer-label">👁 Viewing</span>
+            <button class="rc-close-btn" onclick="closeScreenViewer()">✕ Stop</button>
+          </div>
+          <video id="screen-video" autoplay playsinline muted class="screen-video"></video>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Battery/Settings Tab -->
     <div id="tab-settings" class="tab-content" style="display:none">
       <div class="panel">
 
@@ -156,7 +212,7 @@
             <label for="s-bgthrottle">Background Throttle</label>
             <span class="setting-value" id="s-bgthrottle-val">5×</span>
           </div>
-          <p class="setting-hint">When the app is in the background (screen off / another tab), multiply the update interval by this factor. At 10× with a 30 s interval, updates only happen every 5 minutes.</p>
+          <p class="setting-hint">When the app is in the background, multiply the update interval by this factor. 10× with 30 s interval = updates every 5 minutes.</p>
           <input type="range" id="s-bgthrottle" class="slider"
                  min="0" max="3" step="1" value="2"
                  oninput="onBgThrottleChange(this.value)" />
@@ -170,6 +226,31 @@
 
       </div>
     </div>
+  </div>
+
+  <!-- ── Stealth overlay: simulates powered-off screen ────────────────────── -->
+  <div id="stealth-overlay" style="display:none" aria-hidden="true">
+    <div class="stealth-content">
+      <div id="stealth-time">--:--</div>
+      <div id="stealth-date">--</div>
+      <div class="stealth-battery">
+        <span id="stealth-bat-icon">🔋</span>
+        <span id="stealth-bat-pct">--</span>
+      </div>
+    </div>
+    <!-- Tap 5× rapidly in the bottom-right corner to deactivate -->
+    <div id="stealth-exit-zone" onclick="stealthTap()"></div>
+  </div>
+
+  <!-- ── Remote lock overlay ───────────────────────────────────────────────── -->
+  <div id="lock-overlay" style="display:none" aria-hidden="true">
+    <div class="lock-content">
+      <div class="lock-icon">🔒</div>
+      <div class="lock-msg">Device Locked</div>
+      <div class="lock-sub">Locked remotely by ZTracky</div>
+      <div class="lock-tap-hint" id="lock-tap-hint">Tap 5× to unlock</div>
+    </div>
+    <div id="lock-exit-zone" onclick="lockTap()"></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

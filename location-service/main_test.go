@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,6 +113,139 @@ func TestHubBroadcast(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for broadcast message")
+	}
+}
+
+func TestHubRelay(t *testing.T) {
+	h := newHub()
+
+	// Sender
+	sender := &Client{userID: 1, username: "alice", send: make(chan []byte, 2)}
+	// Target
+	target := &Client{userID: 2, username: "bob", send: make(chan []byte, 2)}
+	h.register(sender)
+	h.register(target)
+	defer h.unregister(sender)
+	defer h.unregister(target)
+
+	inc := IncomingMessage{Type: "remote_command", Command: "lock", TargetUserID: 2}
+	h.relay(2, 1, "alice", inc)
+
+	select {
+	case msg := <-target.send:
+		var rm RelayMessage
+		if err := json.Unmarshal(msg, &rm); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if rm.SenderUserID != 1 || rm.Command != "lock" || rm.Type != "remote_command" {
+			t.Fatalf("unexpected relay message: %+v", rm)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relayed message")
+	}
+}
+
+func TestHubRelayUnknownTarget(t *testing.T) {
+	h := newHub()
+	// Relay to a non-existent user should not panic
+	inc := IncomingMessage{Type: "remote_command", Command: "lock", TargetUserID: 999}
+	h.relay(999, 1, "alice", inc) // should silently no-op
+}
+
+func TestHubOnlineStatus(t *testing.T) {
+	h := newHub()
+	c1 := &Client{userID: 10, username: "u10", send: make(chan []byte, 1)}
+	c2 := &Client{userID: 20, username: "u20", send: make(chan []byte, 1)}
+	h.register(c1)
+	h.register(c2)
+	defer h.unregister(c1)
+	defer h.unregister(c2)
+
+	online := h.onlineStatus([]int64{10, 20, 30})
+	if len(online) != 2 {
+		t.Fatalf("expected 2 online, got %d: %v", len(online), online)
+	}
+	for _, id := range online {
+		if id != 10 && id != 20 {
+			t.Fatalf("unexpected online id: %d", id)
+		}
+	}
+}
+
+func TestWSCheckPresence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(serveWS))
+	defer srv.Close()
+
+	tok := makeToken("1")
+	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?token=" + tok + "&username=alice"
+
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Send check_presence with no friends → should get back empty online_ids
+	msg := `{"type":"check_presence","friends":[]}`
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(msg)); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	var resp PresenceResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if resp.Type != "presence_status" {
+		t.Fatalf("unexpected type: %s", resp.Type)
+	}
+}
+
+func TestWSRelayRemoteCommand(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(serveWS))
+	defer srv.Close()
+
+	// Alice (user 1) will send a command, Bob (user 2) will receive it
+	tokAlice := makeToken("1")
+	tokBob := makeToken("2")
+
+	urlAlice := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?token=" + tokAlice + "&username=alice"
+	urlBob := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?token=" + tokBob + "&username=bob"
+
+	connAlice, _, err := websocket.DefaultDialer.Dial(urlAlice, nil)
+	if err != nil {
+		t.Fatalf("alice dial failed: %v", err)
+	}
+	defer connAlice.Close()
+
+	connBob, _, err := websocket.DefaultDialer.Dial(urlBob, nil)
+	if err != nil {
+		t.Fatalf("bob dial failed: %v", err)
+	}
+	defer connBob.Close()
+
+	// Alice sends lock command to Bob (user_id=2)
+	cmd := `{"type":"remote_command","target_user_id":2,"command":"lock"}`
+	if err := connAlice.WriteMessage(websocket.TextMessage, []byte(cmd)); err != nil {
+		t.Fatalf("alice write error: %v", err)
+	}
+
+	// Bob should receive it
+	connBob.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, data, err := connBob.ReadMessage()
+	if err != nil {
+		t.Fatalf("bob read error: %v", err)
+	}
+	var rm RelayMessage
+	if err := json.Unmarshal(data, &rm); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if rm.Command != "lock" || rm.SenderUserID != 1 || rm.SenderName != "alice" {
+		t.Fatalf("unexpected relay message: %+v", rm)
 	}
 }
 
